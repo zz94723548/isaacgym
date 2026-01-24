@@ -28,8 +28,7 @@ from isaacgym import gymutil
 def configure_sim_params(args):
     sim_params = gymapi.SimParams()
     sim_params.dt = 1.0 / 60.0  # 时间步长：60Hz（0.0167秒）
-    sim_params.substeps = 2     # 每帧的物理子步数
-    
+    sim_params.substeps = 2     # 每帧的物理子步数    
     if args.physics_engine == gymapi.SIM_FLEX:
         # 使用 NVIDIA Flex 物理引擎的配置参数
         sim_params.flex.solver_type = 5            # 求解器类型
@@ -118,6 +117,36 @@ def load_robot_asset(gym, sim, asset_root, asset_file, asset_options):
     
     return robot_asset
 
+# 加载工作台资产
+def load_workbench_asset(gym, sim, asset_root, asset_file):
+    print("Loading asset '%s' from '%s'" % (asset_file, asset_root))
+    
+    workbench_asset_options = gymapi.AssetOptions()
+    workbench_asset_options.fix_base_link = True
+    workbench_asset_options.density = 100.0         # 设置密度
+    workbench_asset = gym.load_asset(sim, asset_root, asset_file, workbench_asset_options)
+    
+    if workbench_asset is None:
+        print("*** Failed to load workbench asset: %s" % asset_file)
+        quit()
+    
+    return workbench_asset
+
+# 加载立方体资产
+def load_cube_asset(gym, sim, asset_root, asset_file):
+    print("Loading asset '%s' from '%s'" % (asset_file, asset_root))
+    
+    cube_asset_options = gymapi.AssetOptions()
+    cube_asset_options.fix_base_link = False
+    cube_asset_options.density = 100.0         # 设置密度
+    cube_asset = gym.load_asset(sim, asset_root, asset_file, cube_asset_options)
+    
+    if cube_asset is None:
+        print("*** Failed to load cube asset: %s" % asset_file)
+        quit()
+    
+    return cube_asset
+
 
 # ===============================
 # 第三部分：场景构建
@@ -148,9 +177,27 @@ def create_visualization_geometries():
     
     return axes_geom, sphere_geom
 
+# 在环境中创建工作台演员
+def create_workbench_actor(gym, env, workbench_asset, position, scale=1.0, env_id=0):
+    workbench_pose = gymapi.Transform()
+    workbench_pose.p = gymapi.Vec3(position[0], position[1], position[2])
+    workbench_pose.r = gymapi.Quat(0.0, 0.0, 0.0, 1.0)
+    
+    workbench_handle = gym.create_actor(env, workbench_asset, workbench_pose, "workbench", env_id, 0)
+    return workbench_handle
+
+# 创建立方体演员
+def create_cube_actor(gym, env, cube_asset, position, scale=1.0, env_id=0):
+    cube_pose = gymapi.Transform()
+    cube_pose.p = gymapi.Vec3(position[0], position[1], position[2])
+    cube_pose.r = gymapi.Quat(0.0, 0.0, 0.0, 1.0)
+    
+    cube_handle = gym.create_actor(env, cube_asset, cube_pose, "cube", env_id, 0)
+    return cube_handle
+
 # 在环境中创建机器人演员
 def create_robot_actor(gym, env, robot_asset, pose, env_id, hand_name="panda_hand"):
-    robot_handle = gym.create_actor(env, robot_asset, pose, "franka", env_id, 2)        # 创建机器人演员
+    robot_handle = gym.create_actor(env, robot_asset, pose, "franka", env_id, 0)        # 创建机器人演员
     body_dict = gym.get_actor_rigid_body_dict(env, robot_handle)            # 获取刚体字典
     props = gym.get_actor_rigid_body_states(env, robot_handle, gymapi.STATE_POS)    # 获取刚体状态
     hand_handle = gym.find_actor_rigid_body_handle(env, robot_handle, hand_name)    # 获取末端执行器句柄
@@ -188,6 +235,18 @@ def initialize_robot_states(gym, envs, robot_handles, joint_mids, num_dofs):
             dof_states['pos'][j] = joint_mids[j]
         # 应用DOF状态
         gym.set_actor_dof_states(envs[i], robot_handles[i], dof_states, gymapi.STATE_POS)
+
+# 配置演员的刚体形状属性
+def configure_actor_shape_properties(gym, env, actor_handle, 
+                                     friction=2.0, restitution=0.0,
+                                     contact_offset=0.02, rest_offset=0.0):
+    shape_props = gym.get_actor_rigid_shape_properties(env, actor_handle)
+    for p in shape_props:
+        p.friction = friction       # 设置摩擦系数
+        p.restitution = restitution     # 设置恢复系数（弹性系数）
+        p.contact_offset = contact_offset       # 设置接触偏移
+        p.rest_offset = rest_offset       # 设置静止偏移
+    gym.set_actor_rigid_shape_properties(env, actor_handle, shape_props)
 
 # 在环境中创建摄像头传感器
 def create_camera_sensor(
@@ -233,9 +292,8 @@ def create_camera_sensor(
     
     return camera_handle, camera_transform
 
-
+#　计算摄像头变换
 def compute_camera_transform(pos, axis_primary, angle_primary, axis_secondary=None, angle_secondary=0):
-    """创建带可选二次旋转的相机变换。"""
     primary_rot = gymapi.Quat.from_axis_angle(
         gymapi.Vec3(axis_primary[0], axis_primary[1], axis_primary[2]),
         np.deg2rad(angle_primary),
@@ -250,7 +308,7 @@ def compute_camera_transform(pos, axis_primary, angle_primary, axis_secondary=No
         rot = primary_rot
     return gymapi.Transform(p=gymapi.Vec3(pos[0], pos[1], pos[2]), r=rot)
 
-
+# 绘制单个摄像头的坐标系
 def draw_camera_axes_single(
     gym,
     viewer,
@@ -262,7 +320,6 @@ def draw_camera_axes_single(
     rotation_axis_secondary=None,
     rotation_angle_secondary=0,
 ):
-    """绘制单个摄像头的坐标系。"""
     cam_tf = compute_camera_transform(
         pos,
         rotation_axis_primary,
@@ -288,7 +345,7 @@ camera_params = {
 }
 
 # 构建完整的模拟场景
-def build_scene(gym, sim, viewer, robot_asset, num_envs=1, spacing=1.0, 
+def build_scene(gym, sim, viewer, robot_asset, workbench_asset, cube_down_asset, cube_up_asset, num_envs=1, spacing=1.0, 
                 hand_name="panda_hand", attractor_stiffness=5e5, attractor_damping=5e3):
     # 环境布局参数
     env_lower = gymapi.Vec3(-spacing, 0.0, -spacing)
@@ -296,10 +353,10 @@ def build_scene(gym, sim, viewer, robot_asset, num_envs=1, spacing=1.0,
     num_per_row = int(math.sqrt(num_envs))
     
     # 初始化存储结构
-    envs = []
-    robot_handles = []
-    attractor_handles = []
-    camera_handles = []
+    envs = []       # 环境列表
+    robot_handles = []      # 机器人句柄列表
+    attractor_handles = []      # 吸引子句柄列表
+    camera_handles = []     # 摄像头句柄列表
     
     # 创建吸引子属性
     attractor_props = create_attractor_properties(attractor_stiffness, attractor_damping)
@@ -340,6 +397,28 @@ def build_scene(gym, sim, viewer, robot_asset, num_envs=1, spacing=1.0,
     gymutil.draw_lines(axes_geom, gym, viewer, temp_env, attractor_props.target)
     gymutil.draw_lines(sphere_geom, gym, viewer, temp_env, attractor_props.target)
 
+    # 创建工作台
+    workbench_handle = create_workbench_actor(gym, temp_env, workbench_asset, position=(0.8, 0.2, 0.0), env_id=0)
+    
+    # 配置工作台接触属性
+    configure_actor_shape_properties(gym, temp_env, workbench_handle, 
+                                    friction=2.0, restitution=0.0, 
+                                    contact_offset=0.03, rest_offset=0.0)
+
+    # 创建立方体
+    cube_pos_down = (0.8, 0.325, -0.3)
+    cube_pos_up = (0.8, 0.325, 0.3)
+    cube_handle_down = create_cube_actor(gym, temp_env, cube_down_asset, position=cube_pos_down, env_id=0)
+    cube_handle_up = create_cube_actor(gym, temp_env, cube_up_asset, position=cube_pos_up, env_id=0)
+    
+    # 配置立方体接触属性
+    configure_actor_shape_properties(gym, temp_env, cube_handle_down, 
+                                    friction=2.0, restitution=0.0,
+                                    contact_offset=0.03, rest_offset=0.0)
+    configure_actor_shape_properties(gym, temp_env, cube_handle_up, 
+                                    friction=2.0, restitution=0.0,
+                                    contact_offset=0.03, rest_offset=0.0)
+
     # 绘制机器人基座坐标系
     base_axes_geom = gymutil.AxesGeometry(2.0)  # 较大的坐标系，长度2.0m
     base_transform = gymapi.Transform()
@@ -347,6 +426,7 @@ def build_scene(gym, sim, viewer, robot_asset, num_envs=1, spacing=1.0,
     base_transform.r = gymapi.Quat(0.0, 0.0, 0.0, 1.0)  # 无旋转
     gymutil.draw_lines(base_axes_geom, gym, viewer, temp_env, base_transform)
     
+    # 创建吸引子
     attractor_handle = gym.create_rigid_body_attractor(temp_env, attractor_props)
     
     # 创建摄像头几何体
@@ -390,6 +470,7 @@ def build_scene(gym, sim, viewer, robot_asset, num_envs=1, spacing=1.0,
     attractor_handles.append(attractor_handle)
     camera_handles.append(camera_handle_1)
     camera_handles.append(camera_handle_2)
+    cube_handles = [cube_handle_down, cube_handle_up]
     
     '''
     # 为其他环境创建场景
@@ -442,6 +523,7 @@ def build_scene(gym, sim, viewer, robot_asset, num_envs=1, spacing=1.0,
         'axes_geom': axes_geom,
         'sphere_geom': sphere_geom,
         'camera_axes_geom': camera_axes_geom,
+        'cube_handles': cube_handles,
         'hand_name': hand_name
     }
 
@@ -590,9 +672,9 @@ def update_franka(t):
 # 主模拟循环
 def run_simulation(gym, sim, viewer, envs, franka_handles, attractor_handles, camera_handles,
                    franka_mids, franka_num_dofs, axes_geom, sphere_geom,
-                   camera_system, next_franka_update_time=1.5):
-    update_time = next_franka_update_time
-    
+                   camera_system, cube_handles, gravity_toggle_supported=True,
+                   sim_start_time=1.5, ):
+    update_time = sim_start_time
     # 主模拟循环
     while not gym.query_viewer_has_closed(viewer):
         # 获取当前模拟时间
@@ -646,8 +728,11 @@ setup_lighting(gym, sim)
 add_ground_plane(gym, sim)
 
 # 定义资产路径
-asset_root = "../assets"
-franka_asset_file = "urdf/franka_description/robots/franka_panda.urdf"
+asset_root = "./urdf"
+franka_asset_file = "franka_description/robots/franka_panda.urdf"
+workbench_asset_file = "workbench.urdf"
+cube_down_asset_file = "cube_down.urdf"
+cube_up_asset_file = "cube_up.urdf"
 
 # 创建资产加载选项
 asset_options = create_asset_options(
@@ -659,6 +744,13 @@ asset_options = create_asset_options(
 # 加载Franka机器人资产
 franka_asset = load_robot_asset(gym, sim, asset_root, franka_asset_file, asset_options)
 
+# 加载工作台资产
+workbench_asset = load_workbench_asset(gym, sim, asset_root, workbench_asset_file)
+
+# 加载立方体资产
+cube_down_asset = load_cube_asset(gym, sim, asset_root, cube_down_asset_file)
+cube_up_asset = load_cube_asset(gym, sim, asset_root, cube_up_asset_file)
+
 # 场景参数
 num_envs = 1
 spacing = 1.0
@@ -666,7 +758,7 @@ hand_name = "panda_hand"
 
 # 构建场景
 scene_data = build_scene(
-    gym, sim, viewer, franka_asset,
+    gym, sim, viewer, franka_asset, workbench_asset,cube_down_asset,cube_up_asset,
     num_envs=num_envs,
     spacing=spacing,
     hand_name=hand_name
@@ -685,6 +777,7 @@ franka_num_dofs = scene_data['num_dofs']
 axes_geom = scene_data['axes_geom']
 sphere_geom = scene_data['sphere_geom']
 camera_axes_geom = scene_data['camera_axes_geom']
+cube_handles = scene_data['cube_handles']
 
 # 初始化机器人状态
 initialize_robot_states(gym, envs, franka_handles, franka_mids, franka_num_dofs)
@@ -694,12 +787,14 @@ cam_pos = gymapi.Vec3(-4.0, 4.0, -1.0)
 cam_target = gymapi.Vec3(0.0, 2.0, 1.0)
 gym.viewer_camera_look_at(viewer, None, cam_pos, cam_target)
 
+sim_start_time = 1.5
+
 # 初始化摄像头系统
 camera_system = initialize_camera_system(
     output_dir="./camera_outputs",
     capture_frequency=10,
     capture_duration=10.0,
-    start_time=1.5
+    start_time=sim_start_time
 )
 
 # 运行主模拟循环
@@ -707,7 +802,8 @@ print("\nStarting simulation...")
 run_simulation(
     gym, sim, viewer, envs, franka_handles, attractor_handles, camera_handles,
     franka_mids, franka_num_dofs, axes_geom, sphere_geom,
-    camera_system, next_franka_update_time=1.5
+    camera_system, cube_handles,
+    sim_start_time=sim_start_time
 )
 
 # 模拟完成

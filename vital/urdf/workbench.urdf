@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<robot name="workbench">
+  <link name="workbench">
+    <visual>
+      <origin xyz="0 0 0"/>
+      <geometry>
+        <box size="1.2 0.2 1.2"/>
+      </geometry>
+      <material name="workbench_material">
+        <color rgba="0.8 0.6 0.4 1.0"/>
+      </material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0"/>
+      <geometry>
+        <box size="1.2 0.2 1.2"/>
+      </geometry>
+    </collision>
+    <inertial>
+      <mass value="5.0"/>
+      <inertia ixx="0.6167" ixy="0.0" ixz="0.0" iyy="1.2" iyz="0.0" izz="0.6167"/>
+    </inertial>
+  </link>
+</robot>
