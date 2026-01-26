@@ -19,6 +19,11 @@ import numpy as np
 from isaacgym import gymapi
 from isaacgym import gymutil
 
+# ===============================
+# 坐标系可视化开关
+# ===============================
+VISUALIZE_AXES = False  # 设置为 True 显示所有坐标系，False 关闭所有坐标系绘制
+
 
 # ===============================
 # 第一部分：模拟环境初始化
@@ -312,6 +317,47 @@ def compute_camera_transform(pos, axis_primary, angle_primary, axis_secondary=No
         rot = primary_rot
     return gymapi.Transform(p=gymapi.Vec3(pos[0], pos[1], pos[2]), r=rot)
 
+
+# 创建并绑定在夹爪上的摄像头
+def create_eye_in_hand_camera(
+    gym,
+    env,
+    hand_handle,
+    width,
+    height,
+    offset=(0.0, 0.0, 0.1),
+    rotation_axis_primary=(1, 0, 0),
+    rotation_angle_primary=-90,
+    rotation_axis_secondary=None,
+    rotation_angle_secondary=0,
+):
+    # 构建摄像头属性
+    camera_props = gymapi.CameraProperties()
+    camera_props.width = width
+    camera_props.height = height
+
+    camera_handle = gym.create_camera_sensor(env, camera_props)
+
+    # 计算安装在手坐标系下的相对变换
+    mount_tf = compute_camera_transform(
+        offset,
+        rotation_axis_primary,
+        rotation_angle_primary,
+        rotation_axis_secondary,
+        rotation_angle_secondary,
+    )
+
+    # 绑定摄像头到夹爪（跟随手的姿态）
+    gym.attach_camera_to_body(
+        camera_handle,
+        env,
+        hand_handle,
+        mount_tf,
+        gymapi.FOLLOW_TRANSFORM,
+    )
+
+    return camera_handle, mount_tf
+
 # 绘制单个摄像头的坐标系
 def draw_camera_axes_single(
     gym,
@@ -354,6 +400,12 @@ camera_params = {
     "rotation_angle4a": 180,
     "rotation_axis4b": (1, 0, 0),
     "rotation_angle4b": 45,
+    # 夹爪摄像头（眼在手上）的相对参数
+    "hand_cam_offset": (0.05, 0.0, 0.0),
+    "hand_cam_axis_primary": (1, 0, 0),
+    "hand_cam_angle_primary": 180,
+    "hand_cam_axis_secondary": (0, 0, 1),
+    "hand_cam_angle_secondary": 90,
 
 }
 
@@ -442,11 +494,12 @@ def build_scene(gym, sim, viewer, robot_asset, workbench_asset, cube_down_asset,
                                     contact_offset=0.03, rest_offset=0.0)
 
     # 绘制机器人基座坐标系
-    base_axes_geom = gymutil.AxesGeometry(2.0)  # 较大的坐标系，长度2.0m
-    base_transform = gymapi.Transform()
-    base_transform.p = gymapi.Vec3(0.0, 0.0, 0.0)  # 基座位置
-    base_transform.r = gymapi.Quat(0.0, 0.0, 0.0, 1.0)  # 无旋转
-    gymutil.draw_lines(base_axes_geom, gym, viewer, temp_env, base_transform)
+    if VISUALIZE_AXES:
+        base_axes_geom = gymutil.AxesGeometry(2.0)  # 较大的坐标系，长度2.0m
+        base_transform = gymapi.Transform()
+        base_transform.p = gymapi.Vec3(0.0, 0.0, 0.0)  # 基座位置
+        base_transform.r = gymapi.Quat(0.0, 0.0, 0.0, 1.0)  # 无旋转
+        gymutil.draw_lines(base_axes_geom, gym, viewer, temp_env, base_transform)
     
     # 创建吸引子
     attractor_handle = gym.create_rigid_body_attractor(temp_env, attractor_props)
@@ -462,12 +515,13 @@ def build_scene(gym, sim, viewer, robot_asset, workbench_asset, cube_down_asset,
         rotation_axis=camera_params["rotation_axis1"],
         rotation_angle=camera_params["rotation_angle1"],
     )
-    draw_camera_axes_single(
-        gym, viewer, temp_env, camera_axes_geom,
-        camera_params["pos1"],
-        camera_params["rotation_axis1"],
-        camera_params["rotation_angle1"],
-    )
+    if VISUALIZE_AXES:
+        draw_camera_axes_single(
+            gym, viewer, temp_env, camera_axes_geom,
+            camera_params["pos1"],
+            camera_params["rotation_axis1"],
+            camera_params["rotation_angle1"],
+        )
     
     # 创建摄像头2 - 正前方视图（朝向机器人）
     camera_handle_2, camera_transform_2 = create_camera_sensor(
@@ -479,14 +533,15 @@ def build_scene(gym, sim, viewer, robot_asset, workbench_asset, cube_down_asset,
         rotation_axis2=camera_params["rotation_axis2b"],
         rotation_angle2=camera_params["rotation_angle2b"],
     )
-    draw_camera_axes_single(
-        gym, viewer, temp_env, camera_axes_geom,
-        camera_params["pos2"],
-        camera_params["rotation_axis2a"],
-        camera_params["rotation_angle2a"],
-        camera_params.get("rotation_axis2b"),
-        camera_params.get("rotation_angle2b", 0),
-    )
+    if VISUALIZE_AXES:
+        draw_camera_axes_single(
+            gym, viewer, temp_env, camera_axes_geom,
+            camera_params["pos2"],
+            camera_params["rotation_axis2a"],
+            camera_params["rotation_angle2a"],
+            camera_params.get("rotation_axis2b"),
+            camera_params.get("rotation_angle2b", 0),
+        )
 
     # 创建摄像头3 - 侧视图１
     camera_handle_3, camera_transform_3 = create_camera_sensor(
@@ -496,12 +551,13 @@ def build_scene(gym, sim, viewer, robot_asset, workbench_asset, cube_down_asset,
         rotation_axis=camera_params["rotation_axis3"],
         rotation_angle=camera_params["rotation_angle3"],
     )
-    draw_camera_axes_single(
-        gym, viewer, temp_env, camera_axes_geom,
-        camera_params["pos3"],
-        camera_params["rotation_axis3"],
-        camera_params["rotation_angle3"],
-    )
+    if VISUALIZE_AXES:
+        draw_camera_axes_single(
+            gym, viewer, temp_env, camera_axes_geom,
+            camera_params["pos3"],
+            camera_params["rotation_axis3"],
+            camera_params["rotation_angle3"],
+        )
     
     # 创建摄像头4 - 侧视图２
     camera_handle_4, camera_transform_4 = create_camera_sensor(
@@ -513,13 +569,28 @@ def build_scene(gym, sim, viewer, robot_asset, workbench_asset, cube_down_asset,
         rotation_axis2=camera_params["rotation_axis4b"],
         rotation_angle2=camera_params["rotation_angle4b"],
     )
-    draw_camera_axes_single(
-        gym, viewer, temp_env, camera_axes_geom,
-        camera_params["pos4"],
-        camera_params["rotation_axis4a"],
-        camera_params["rotation_angle4a"],
-        camera_params.get("rotation_axis4b"),
-        camera_params.get("rotation_angle4b", 0),
+    if VISUALIZE_AXES:
+        draw_camera_axes_single(
+            gym, viewer, temp_env, camera_axes_geom,
+            camera_params["pos4"],
+            camera_params["rotation_axis4a"],
+            camera_params["rotation_angle4a"],
+            camera_params.get("rotation_axis4b"),
+            camera_params.get("rotation_angle4b", 0),
+        )
+    
+    # 创建摄像头5 - 眼在手上的摄像头（绑定在 panda_hand 上）
+    hand_camera_handle, hand_camera_mount_tf = create_eye_in_hand_camera(
+        gym,
+        temp_env,
+        hand_handle,
+        width=camera_params["width"],
+        height=camera_params["height"],
+        offset=camera_params["hand_cam_offset"],
+        rotation_axis_primary=camera_params["hand_cam_axis_primary"],
+        rotation_angle_primary=camera_params["hand_cam_angle_primary"],
+        rotation_axis_secondary=camera_params["hand_cam_axis_secondary"],
+        rotation_angle_secondary=camera_params["hand_cam_angle_secondary"],
     )
     
 
@@ -530,6 +601,7 @@ def build_scene(gym, sim, viewer, robot_asset, workbench_asset, cube_down_asset,
     camera_handles.append(camera_handle_2)
     camera_handles.append(camera_handle_3)
     camera_handles.append(camera_handle_4)
+    camera_handles.append(hand_camera_handle)
     cube_handles = [cube_down_handle, cube_up_handle]
     
     '''
@@ -590,6 +662,7 @@ def build_scene(gym, sim, viewer, robot_asset, workbench_asset, cube_down_asset,
         'cube_down_pos': cube_down_pos,
         'cube_up_pos': cube_up_pos,
         'initial_hand_pose': attractor_props.target,
+        'hand_camera_mount_tf': hand_camera_mount_tf,
     }
 
 # ===============================
@@ -905,41 +978,43 @@ def run_simulation(gym, sim, viewer, envs, franka_handles, attractor_handles, ca
         gym.fetch_results(sim, True)
 
         #　可视化摄像头坐标系
-        draw_camera_axes_single(
-            gym, viewer, envs[0], camera_axes_geom,
-            camera_params["pos1"],
-            camera_params["rotation_axis1"],
-            camera_params["rotation_angle1"],
-        )
-        draw_camera_axes_single(
-            gym, viewer, envs[0], camera_axes_geom,
-            camera_params["pos2"],
-            camera_params["rotation_axis2a"],
-            camera_params["rotation_angle2a"],
-            camera_params.get("rotation_axis2b"),
-            camera_params.get("rotation_angle2b", 0),
-        )
-        draw_camera_axes_single(
-            gym, viewer, envs[0], camera_axes_geom,
-            camera_params["pos3"],
-            camera_params["rotation_axis3"],
-            camera_params["rotation_angle3"],
-        )
-        draw_camera_axes_single(
-            gym, viewer, envs[0], camera_axes_geom,
-            camera_params["pos4"],
-            camera_params["rotation_axis4a"],
-            camera_params["rotation_angle4a"],
-            camera_params.get("rotation_axis4b"),
-            camera_params.get("rotation_angle4b", 0),
-        )
+        if VISUALIZE_AXES:
+            draw_camera_axes_single(
+                gym, viewer, envs[0], camera_axes_geom,
+                camera_params["pos1"],
+                camera_params["rotation_axis1"],
+                camera_params["rotation_angle1"],
+            )
+            draw_camera_axes_single(
+                gym, viewer, envs[0], camera_axes_geom,
+                camera_params["pos2"],
+                camera_params["rotation_axis2a"],
+                camera_params["rotation_angle2a"],
+                camera_params.get("rotation_axis2b"),
+                camera_params.get("rotation_angle2b", 0),
+            )
+            draw_camera_axes_single(
+                gym, viewer, envs[0], camera_axes_geom,
+                camera_params["pos3"],
+                camera_params["rotation_axis3"],
+                camera_params["rotation_angle3"],
+            )
+            draw_camera_axes_single(
+                gym, viewer, envs[0], camera_axes_geom,
+                camera_params["pos4"],
+                camera_params["rotation_axis4a"],
+                camera_params["rotation_angle4a"],
+                camera_params.get("rotation_axis4b"),
+                camera_params.get("rotation_angle4b", 0),
+            )
 
         # 可视化机器人基座坐标系
-        base_axes_geom = gymutil.AxesGeometry(2.0)  # 较大的坐标系，长度2.0m
-        base_transform = gymapi.Transform()
-        base_transform.p = gymapi.Vec3(0.0, 0.0, 0.0)  # 基座位置
-        base_transform.r = gymapi.Quat(0.0, 0.0, 0.0, 1.0)  # 无旋转
-        gymutil.draw_lines(base_axes_geom, gym, viewer, envs[0], base_transform)
+        if VISUALIZE_AXES:
+            base_axes_geom = gymutil.AxesGeometry(2.0)  # 较大的坐标系，长度2.0m
+            base_transform = gymapi.Transform()
+            base_transform.p = gymapi.Vec3(0.0, 0.0, 0.0)  # 基座位置
+            base_transform.r = gymapi.Quat(0.0, 0.0, 0.0, 1.0)  # 无旋转
+            gymutil.draw_lines(base_axes_geom, gym, viewer, envs[0], base_transform)
 
         # 执行渲染步骤（更新可视化）
         gym.step_graphics(sim)
@@ -1041,6 +1116,28 @@ initialize_robot_states(gym, envs, franka_handles, franka_mids, franka_num_dofs)
 # 初始化后重新获取手的位置并更新吸引子
 robot_props_updated = gym.get_actor_rigid_body_states(envs[0], franka_handles[0], gymapi.STATE_POS)
 hand_pose_updated = robot_props_updated['pose'][:][scene_data['body_dict'][hand_name]]
+
+print(
+    "Eye-in-hand mount base (panda_hand) world pose -> "
+    f"pos: ({hand_pose_updated['p']['x']:.4f}, {hand_pose_updated['p']['y']:.4f}, {hand_pose_updated['p']['z']:.4f}), "
+    f"quat: ({hand_pose_updated['r']['x']:.4f}, {hand_pose_updated['r']['y']:.4f}, {hand_pose_updated['r']['z']:.4f}, {hand_pose_updated['r']['w']:.4f})"
+)
+
+# 绘制夹爪(panda_hand)的坐标系用于可视化
+hand_axes_geom = gymutil.AxesGeometry(0.15)  # 手坐标系，长度0.15m
+hand_transform = gymapi.Transform()
+hand_transform.p = gymapi.Vec3(hand_pose_updated['p']['x'], hand_pose_updated['p']['y'], hand_pose_updated['p']['z'])
+hand_transform.r = gymapi.Quat(hand_pose_updated['r']['x'], hand_pose_updated['r']['y'], hand_pose_updated['r']['z'], hand_pose_updated['r']['w'])
+if VISUALIZE_AXES:
+    gymutil.draw_lines(hand_axes_geom, gym, viewer, envs[0], hand_transform)
+print(f"Hand (panda_hand) coordinate frame drawn at position")
+
+print(
+    "Eye-in-hand relative mount (hand frame) -> offset: "
+    f"{camera_params['hand_cam_offset']}, primary axis/angle: "
+    f"{camera_params['hand_cam_axis_primary']}/{camera_params['hand_cam_angle_primary']} deg, "
+    f"secondary axis/angle: {camera_params['hand_cam_axis_secondary']}/{camera_params['hand_cam_angle_secondary']} deg"
+)
 
 # 更新吸引子目标位置为初始化后的手的位置（下方0.1m）
 updated_attractor_target = gymapi.Transform(
