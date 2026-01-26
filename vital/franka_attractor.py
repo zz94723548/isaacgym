@@ -199,10 +199,11 @@ def create_cube_actor(gym, env, cube_asset, position, scale=1.0, env_id=0):
 def create_robot_actor(gym, env, robot_asset, pose, env_id, hand_name="panda_hand"):
     robot_handle = gym.create_actor(env, robot_asset, pose, "franka", env_id, 0)        # 创建机器人演员
     body_dict = gym.get_actor_rigid_body_dict(env, robot_handle)            # 获取刚体字典
+    dof_dict = gym.get_actor_dof_dict(env, robot_handle)                    # 获取DOF字典
     props = gym.get_actor_rigid_body_states(env, robot_handle, gymapi.STATE_POS)    # 获取刚体状态
     hand_handle = gym.find_actor_rigid_body_handle(env, robot_handle, hand_name)    # 获取末端执行器句柄
     
-    return robot_handle, body_dict, props, hand_handle
+    return robot_handle, body_dict, dof_dict, props, hand_handle
 
 # 配置机器人关节属性
 def configure_robot_dof_properties(gym, env, robot_handle, franka_dof_props):
@@ -217,10 +218,13 @@ def setup_robot_dof_properties(dof_props):
     # 前两个关节使用位置驱动模式
     dof_props["driveMode"][0:2] = gymapi.DOF_MODE_POS
     
-    # 夹爪关节（7及以后）使用位置驱动模式，并设置高刚度
-    dof_props["driveMode"][7:] = gymapi.DOF_MODE_POS
-    dof_props['stiffness'][7:] = 1e10
-    dof_props['damping'][7:] = 1.0
+    # 夹爪：两个指头都驱动，在代码中手动同步mimic（Isaac Gym不自动处理URDF mimic）
+    dof_props["driveMode"][7] = gymapi.DOF_MODE_POS
+    dof_props["driveMode"][8] = gymapi.DOF_MODE_POS
+    dof_props['stiffness'][7] = 1e10
+    dof_props['damping'][7] = 1.0
+    dof_props['stiffness'][8] = 1e10
+    dof_props['damping'][8] = 1.0
     
     return dof_props
 
@@ -334,14 +338,23 @@ camera_params = {
     "axis_length": 0.1,
     "width": 640,
     "height": 480,
-    "pos1": (0.0, 1.5, 0.0),
+    "pos1": (0.4, 1.0, 0.0),
     "rotation_axis1": (1, 0, 0),
     "rotation_angle1": -90,
-    "pos2": (0.5, 1.5, 0.0),
+    "pos2": (0.8, 0.8, 0.0),
     "rotation_axis2a": (0, 1, 0),
     "rotation_angle2a": 90,
     "rotation_axis2b": (0, 0, 1),
     "rotation_angle2b": 45,
+    "pos3": (0.4, 0.8, 0.6),
+    "rotation_axis3": (1, 0, 0),
+    "rotation_angle3": -45,
+    "pos4": (0.4, 0.8, -0.6),
+    "rotation_axis4a": (0, 1, 0),
+    "rotation_angle4a": 180,
+    "rotation_axis4b": (1, 0, 0),
+    "rotation_angle4b": 45,
+
 }
 
 # 构建完整的模拟场景
@@ -373,7 +386,7 @@ def build_scene(gym, sim, viewer, robot_asset, workbench_asset, cube_down_asset,
     temp_env = gym.create_env(sim, env_lower, env_upper, num_per_row)
     
     # 为第一个环境创建机器人
-    robot_handle, body_dict, props, hand_handle = create_robot_actor(
+    robot_handle, body_dict, dof_dict, props, hand_handle = create_robot_actor(
         gym, temp_env, robot_asset, robot_pose, 0, hand_name
     )
     
@@ -386,12 +399,20 @@ def build_scene(gym, sim, viewer, robot_asset, workbench_asset, cube_down_asset,
     upper_limits = dof_props['upper'].copy()
     mids = 0.5 * (upper_limits + lower_limits)  # 计算中点位置
     num_dofs = len(dof_props)
-    
-    # 设置吸引子目标位置
+
+    # 记录夹爪 DOF 索引，便于后续开合控制
+    finger_dof_indices = [
+        dof_dict.get("panda_finger_joint1"),
+        dof_dict.get("panda_finger_joint2"),
+    ]
+
+    if None in finger_dof_indices:
+        raise ValueError("Finger DOF indices not found in Franka asset")
+
+    # 设置吸引子初始位置
     attractor_props.target = props['pose'][:][body_dict[hand_name]]
-    attractor_props.target.p.y -= 0.1
-    attractor_props.target.p.z = 0.1
-    attractor_props.rigid_handle = hand_handle
+    attractor_props.target.p.y = attractor_props.target.p.y - 0.1  # 吸引子在手下方0.1m
+    attractor_props.rigid_handle = hand_handle 
     
     # 绘制吸引子可视化
     gymutil.draw_lines(axes_geom, gym, viewer, temp_env, attractor_props.target)
@@ -406,16 +427,17 @@ def build_scene(gym, sim, viewer, robot_asset, workbench_asset, cube_down_asset,
                                     contact_offset=0.03, rest_offset=0.0)
 
     # 创建立方体
-    cube_pos_down = (0.8, 0.325, -0.3)
-    cube_pos_up = (0.8, 0.325, 0.3)
-    cube_handle_down = create_cube_actor(gym, temp_env, cube_down_asset, position=cube_pos_down, env_id=0)
-    cube_handle_up = create_cube_actor(gym, temp_env, cube_up_asset, position=cube_pos_up, env_id=0)
+    # ｘ轴范围（0.225-0.625）z轴范围（-0.4-0.4）
+    cube_down_pos = (0.225, 0.325, -0.4)
+    cube_up_pos = (0.6, 0.325, 0.4)
+    cube_down_handle = create_cube_actor(gym, temp_env, cube_down_asset, position=cube_down_pos, env_id=0)
+    cube_up_handle = create_cube_actor(gym, temp_env, cube_up_asset, position=cube_up_pos, env_id=0)
     
     # 配置立方体接触属性
-    configure_actor_shape_properties(gym, temp_env, cube_handle_down, 
+    configure_actor_shape_properties(gym, temp_env, cube_down_handle, 
                                     friction=2.0, restitution=0.0,
                                     contact_offset=0.03, rest_offset=0.0)
-    configure_actor_shape_properties(gym, temp_env, cube_handle_up, 
+    configure_actor_shape_properties(gym, temp_env, cube_up_handle, 
                                     friction=2.0, restitution=0.0,
                                     contact_offset=0.03, rest_offset=0.0)
 
@@ -431,6 +453,7 @@ def build_scene(gym, sim, viewer, robot_asset, workbench_asset, cube_down_asset,
     
     # 创建摄像头几何体
     camera_axes_geom = gymutil.AxesGeometry(camera_params["axis_length"])  # 较小的坐标系，长度0.1m
+
     # 创建摄像头1 - 俯视图
     camera_handle_1, camera_transform_1 = create_camera_sensor(
         gym, temp_env,
@@ -464,13 +487,50 @@ def build_scene(gym, sim, viewer, robot_asset, workbench_asset, cube_down_asset,
         camera_params.get("rotation_axis2b"),
         camera_params.get("rotation_angle2b", 0),
     )
+
+    # 创建摄像头3 - 侧视图１
+    camera_handle_3, camera_transform_3 = create_camera_sensor(
+        gym, temp_env,
+        width=camera_params["width"], height=camera_params["height"],
+        pos=camera_params["pos3"],
+        rotation_axis=camera_params["rotation_axis3"],
+        rotation_angle=camera_params["rotation_angle3"],
+    )
+    draw_camera_axes_single(
+        gym, viewer, temp_env, camera_axes_geom,
+        camera_params["pos3"],
+        camera_params["rotation_axis3"],
+        camera_params["rotation_angle3"],
+    )
     
+    # 创建摄像头4 - 侧视图２
+    camera_handle_4, camera_transform_4 = create_camera_sensor(
+        gym, temp_env,
+        width=camera_params["width"], height=camera_params["height"],
+        pos=camera_params["pos4"],
+        rotation_axis=camera_params["rotation_axis4a"],
+        rotation_angle=camera_params["rotation_angle4a"],
+        rotation_axis2=camera_params["rotation_axis4b"],
+        rotation_angle2=camera_params["rotation_angle4b"],
+    )
+    draw_camera_axes_single(
+        gym, viewer, temp_env, camera_axes_geom,
+        camera_params["pos4"],
+        camera_params["rotation_axis4a"],
+        camera_params["rotation_angle4a"],
+        camera_params.get("rotation_axis4b"),
+        camera_params.get("rotation_angle4b", 0),
+    )
+    
+
     envs.append(temp_env)
     robot_handles.append(robot_handle)
     attractor_handles.append(attractor_handle)
     camera_handles.append(camera_handle_1)
     camera_handles.append(camera_handle_2)
-    cube_handles = [cube_handle_down, cube_handle_up]
+    camera_handles.append(camera_handle_3)
+    camera_handles.append(camera_handle_4)
+    cube_handles = [cube_down_handle, cube_up_handle]
     
     '''
     # 为其他环境创建场景
@@ -524,7 +584,12 @@ def build_scene(gym, sim, viewer, robot_asset, workbench_asset, cube_down_asset,
         'sphere_geom': sphere_geom,
         'camera_axes_geom': camera_axes_geom,
         'cube_handles': cube_handles,
-        'hand_name': hand_name
+        'body_dict': body_dict,
+        'hand_name': hand_name,
+        'finger_dof_indices': finger_dof_indices,
+        'cube_down_pos': cube_down_pos,
+        'cube_up_pos': cube_up_pos,
+        'initial_hand_pose': attractor_props.target,
     }
 
 # ===============================
@@ -619,51 +684,147 @@ def log_capture_progress(capture_count, current_time, log_interval=10):
 
 
 # ===============================
-# 第五部分：吸引子更新
+# 第五部分：吸引子更新（抓取/放置规划）
 # ===============================
 
-# 更新所有环境中吸引子的目标位置
-def update_franka(t):
-    gym.clear_lines(viewer)  # 清除之前绘制的所有线条
-    for i in range(num_envs):
-        # 更新吸引子的目标位置
-        attractor_properties = gym.get_attractor_properties(envs[i], attractor_handles[i])
-        pose = attractor_properties.target
+def lerp_vec(a, b, alpha):
+    return (
+        a[0] + (b[0] - a[0]) * alpha,
+        a[1] + (b[1] - a[1]) * alpha,
+        a[2] + (b[2] - a[2]) * alpha,
+    )
+
+def slerp_quat(q1, q2, alpha):
+    """四元数球面线性插值"""
+    # 计算点积
+    dot = q1.x * q2.x + q1.y * q2.y + q1.z * q2.z + q1.w * q2.w
+    
+    # 如果点积为负，反转一个四元数以选择最短路径
+    if dot < 0.0:
+        q2 = gymapi.Quat(-q2.x, -q2.y, -q2.z, -q2.w)
+        dot = -dot
+    
+    # 线性插值（简化版，适用于小角度）
+    result = gymapi.Quat(
+        q1.x + (q2.x - q1.x) * alpha,
+        q1.y + (q2.y - q1.y) * alpha,
+        q1.z + (q2.z - q1.z) * alpha,
+        q1.w + (q2.w - q1.w) * alpha
+    )
+    
+    # 归一化
+    norm = (result.x**2 + result.y**2 + result.z**2 + result.w**2)**0.5
+    if norm > 0:
+        result.x /= norm
+        result.y /= norm
+        result.z /= norm
+        result.w /= norm
+    
+    return result
+
+# 构建抓取/放置动作规划
+def build_pick_place_plan(initial_pose, cube_up_pos, cube_down_pos,
+                          hover_offset, grasp_offset, release_offset):
+
+    # 起始位置和姿态
+    start_pos = (initial_pose.p.x, initial_pose.p.y, initial_pose.p.z)
+    start_rot = initial_pose.r
+    
+    # 夹爪向下的旋转（绕X轴180度，使夹爪指向-Y方向）
+    grasp_rot = gymapi.Quat(0.707106, 0.0, 0.0, 0.707106)  # 向下姿态
+    
+    # 计算吸引子目标位置
+    hover_up = (cube_up_pos[0], cube_up_pos[1] + hover_offset, cube_up_pos[2])
+    grasp_pos = (cube_up_pos[0], cube_up_pos[1] + grasp_offset, cube_up_pos[2])
+    lift_pos = hover_up
+    hover_down = (cube_down_pos[0], cube_down_pos[1] + hover_offset, cube_down_pos[2])
+    place_pos = (cube_down_pos[0], cube_down_pos[1] + release_offset, cube_down_pos[2])
+    retreat_pos = (cube_down_pos[0], cube_down_pos[1] + hover_offset + 0.05, cube_down_pos[2])
+
+    # finger_width 代表两指张开的总宽度
+    finger_open = 0.08
+    finger_closed = 0.045
+
+    plan = [
+        {"name": "move_pregrasp", "start": start_pos, "goal": hover_up, "start_rot": start_rot, "goal_rot": grasp_rot, "duration": 2.0, "start_finger_width": finger_open, "goal_finger_width": finger_open},
+        {"name": "descend_grasp", "start": hover_up, "goal": grasp_pos, "start_rot": grasp_rot, "goal_rot": grasp_rot, "duration": 2.0, "start_finger_width": finger_open, "goal_finger_width": finger_open},
+        {"name": "close_gripper", "start": grasp_pos, "goal": grasp_pos, "start_rot": grasp_rot, "goal_rot": grasp_rot, "duration": 1.5, "start_finger_width": finger_open, "goal_finger_width": finger_closed},
+        {"name": "stabilize_after_grasp", "start": grasp_pos, "goal": grasp_pos, "start_rot": grasp_rot, "goal_rot": grasp_rot, "duration": 0.5, "start_finger_width": finger_closed, "goal_finger_width": finger_closed},
+        {"name": "lift", "start": grasp_pos, "goal": lift_pos, "start_rot": grasp_rot, "goal_rot": grasp_rot, "duration": 1.5, "start_finger_width": finger_closed, "goal_finger_width": finger_closed},
+        {"name": "move_over_drop", "start": lift_pos, "goal": hover_down, "start_rot": grasp_rot, "goal_rot": grasp_rot, "duration": 3.0, "start_finger_width": finger_closed, "goal_finger_width": finger_closed},
+        {"name": "stabilize_before_place", "start": hover_down, "goal": hover_down, "start_rot": grasp_rot, "goal_rot": grasp_rot, "duration": 0.5, "start_finger_width": finger_closed, "goal_finger_width": finger_closed},
+        {"name": "place_release", "start": hover_down, "goal": place_pos, "start_rot": grasp_rot, "goal_rot": grasp_rot, "duration": 2.0, "start_finger_width": finger_closed, "goal_finger_width": finger_closed},
+        {"name": "open_gripper", "start": place_pos, "goal": place_pos, "start_rot": grasp_rot, "goal_rot": grasp_rot, "duration": 1.5, "start_finger_width": finger_closed, "goal_finger_width": finger_open},
+        {"name": "retreat", "start": place_pos, "goal": retreat_pos, "start_rot": grasp_rot, "goal_rot": grasp_rot, "duration": 1.5, "start_finger_width": finger_open, "goal_finger_width": finger_open},
+    ]
+
+    return plan
+
+# 控制夹爪开合
+def command_gripper(gym, envs, robot_handles, finger_dof_indices, target_width, base_dof_pos):
+    """Set gripper finger targets via per-actor DOF position targets array."""
+    # 添加最小间隙，避免目标为0时的硬碰撞导致非对称回弹
+    min_gap = 0.001  # 1mm 最小间隙
+    single_finger_pos = max(target_width * 0.5, min_gap * 0.5)
+    
+    for env, handle in zip(envs, robot_handles):
+        # 获取当前DOF目标，只修改夹爪，不干扰手臂关节
+        dof_states = gym.get_actor_dof_states(env, handle, gymapi.STATE_NONE)
+        targets = dof_states['pos'].copy()
+        # 手动同步两个指头（Isaac Gym不自动处理URDF mimic约束）
+        targets[finger_dof_indices[0]] = single_finger_pos
+        targets[finger_dof_indices[1]] = single_finger_pos
+        gym.set_actor_dof_position_targets(env, handle, targets)
         
-        # 计算随时间变化的目标轨迹（使用正弦和余弦波形）
-        pose.p.x = 0.2 * math.sin(1.5 * t - math.pi * float(i) / num_envs)  # X 方向：正弦波
-        pose.p.y = 0.7 + 0.1 * math.cos(2.5 * t - math.pi * float(i) / num_envs)  # Y 方向：余弦波加偏移
-        pose.p.z = 0.2 * math.cos(1.5 * t - math.pi * float(i) / num_envs)  # Z 方向：余弦波
 
-        # 设置吸引子的新目标位置
-        gym.set_attractor_target(envs[i], attractor_handles[i], pose)
+# 更新抓取/放置吸引子位置和夹爪状态
+def update_pick_and_place(gym, viewer, envs, attractor_handles, axes_geom, sphere_geom,
+                          plan_state, finger_dof_indices, robot_handles, base_dof_pos):
+    if not plan_state['running']:
+        return plan_state
 
-        # 在更新的位置重新绘制吸引子的可视化元素
-        gymutil.draw_lines(axes_geom, gym, viewer, envs[i], pose)
-        gymutil.draw_lines(sphere_geom, gym, viewer, envs[i], pose)
+    t = plan_state['current_time']      # 当前时间
+    dt = plan_state['dt']               # 时间步长
+    phase_idx = plan_state['phase_idx'] # 当前阶段索引
+    
+    if phase_idx >= len(plan_state['plan']):
+        return plan_state  # 已完成
 
-        # 重新绘制机器人基座坐标系
-        base_axes_geom = gymutil.AxesGeometry(2.0)  # 较大的坐标系，长度2.0m
-        base_transform = gymapi.Transform()
-        base_transform.p = gymapi.Vec3(0.0, 0.0, 0.0)  # 基座位置
-        base_transform.r = gymapi.Quat(0.0, 0.0, 0.0, 1.0)  # 无旋转
-        gymutil.draw_lines(base_axes_geom, gym, viewer, envs[i], base_transform)
+    gym.clear_lines(viewer)
 
-        # 重新绘制两个摄像头的坐标轴
-        draw_camera_axes_single(
-            gym, viewer, envs[i], camera_axes_geom,
-            camera_params["pos1"],
-            camera_params["rotation_axis1"],
-            camera_params["rotation_angle1"],
-        )
-        draw_camera_axes_single(
-            gym, viewer, envs[i], camera_axes_geom,
-            camera_params["pos2"],
-            camera_params["rotation_axis2a"],
-            camera_params["rotation_angle2a"],
-            camera_params.get("rotation_axis2b"),
-            camera_params.get("rotation_angle2b", 0),
-        )
+    phase = plan_state['plan'][phase_idx]
+    plan_state['phase_elapsed'] += dt
+    alpha = min(plan_state['phase_elapsed'] / max(phase['duration'], 1e-4), 1.0)
+
+    target_pos = lerp_vec(phase['start'], phase['goal'], alpha)
+    target_rot = slerp_quat(phase['start_rot'], phase['goal_rot'], alpha)
+    
+    # 对夹爪宽度也进行线性插值，实现平滑闭合/打开
+    target_finger_width = phase['start_finger_width'] + (phase['goal_finger_width'] - phase['start_finger_width']) * alpha
+
+    # 更新吸引子目标（位置和旋转）
+    pose = plan_state['current_pose']
+    pose.p.x, pose.p.y, pose.p.z = target_pos
+    pose.r = target_rot
+    gym.set_attractor_target(envs[0], attractor_handles[0], pose)
+
+    # 可视化当前吸引子
+    gymutil.draw_lines(axes_geom, gym, viewer, envs[0], pose)
+    gymutil.draw_lines(sphere_geom, gym, viewer, envs[0], pose)
+
+    # 控制夹爪（使用插值后的宽度）
+    command_gripper(gym, envs, robot_handles, finger_dof_indices, target_finger_width, base_dof_pos)
+
+    # 阶段切换
+    if plan_state['phase_elapsed'] >= phase['duration']:
+        plan_state['phase_idx'] += 1
+        plan_state['phase_elapsed'] = 0.0
+        # 下一段的起点用当前目标，避免跳变
+        if plan_state['phase_idx'] < len(plan_state['plan']):
+            plan_state['plan'][plan_state['phase_idx']]['start'] = target_pos
+            plan_state['plan'][plan_state['phase_idx']]['start_rot'] = target_rot
+
+    return plan_state
 
 
 # ===============================
@@ -671,23 +832,114 @@ def update_franka(t):
 # ===============================
 # 主模拟循环
 def run_simulation(gym, sim, viewer, envs, franka_handles, attractor_handles, camera_handles,
-                   franka_mids, franka_num_dofs, axes_geom, sphere_geom,
-                   camera_system, cube_handles, gravity_toggle_supported=True,
-                   sim_start_time=1.5, ):
-    update_time = sim_start_time
+                   franka_mids, franka_num_dofs, axes_geom, sphere_geom,camera_axes_geom,
+                   camera_system, cube_handles, plan_state, finger_dof_indices,
+                   gravity_toggle_supported=True, sim_start_time=1.5, body_dict=None, hand_name="panda_hand"):
+    last_t = gym.get_sim_time(sim)
+    last_print_time = 0.0  # 用于控制打印频率
+    print_interval = 0.2   # 每0.2秒打印一次
+
+    # 打印初始姿态
+    robot_props = gym.get_actor_rigid_body_states(envs[0], franka_handles[0], gymapi.STATE_POS)
+    hand_pose = robot_props['pose'][:][body_dict[hand_name]]
+    print(f"Initial panda_hand position: x={hand_pose['p']['x']:.4f}, y={hand_pose['p']['y']:.4f}, z={hand_pose['p']['z']:.4f}")
+    print(f"Initial panda_hand orientation: x={hand_pose['r']['x']:.4f}, y={hand_pose['r']['y']:.4f}, z={hand_pose['r']['z']:.4f}, w={hand_pose['r']['w']:.4f}")
+
     # 主模拟循环
     while not gym.query_viewer_has_closed(viewer):
         # 获取当前模拟时间
         t = gym.get_sim_time(sim)
+        dt = t - last_t
+        last_t = t
         
-        # 更新吸引子目标
-        if t >= update_time:
-            update_franka(t)
-            update_time += 0.01
+        # 实时打印位置信息
+        if body_dict and t - last_print_time >= print_interval:
+            last_print_time = t
+            # 获取机器人刚体状态
+            robot_props = gym.get_actor_rigid_body_states(envs[0], franka_handles[0], gymapi.STATE_POS)
+            
+            # 获取立方体状态
+            cube_up_props = gym.get_actor_rigid_body_states(envs[0], cube_handles[0], gymapi.STATE_POS)
+            cube_down_props = gym.get_actor_rigid_body_states(envs[0], cube_handles[1], gymapi.STATE_POS)
+            
+            # 获取各个刚体的位置
+            hand_idx = body_dict[hand_name]
+            panda_hand_pose_data = robot_props['pose'][:][hand_idx]
+            panda_hand_pos = panda_hand_pose_data['p']
+            
+            cube_up_pose_data = cube_up_props['pose'][:][0]
+            cube_up_pos_current = cube_up_pose_data['p']
+            
+            cube_down_pose_data = cube_down_props['pose'][:][0]
+            cube_down_pos_current = cube_down_pose_data['p']
+            
+            # 获取吸引子位置（从 plan_state 中取）
+            attractor_pos = plan_state['current_pose'].p
+            
+            print(f"\n[t={t:.2f}s] === 实时位置信息 ===")
+            print(f"cube_up:      x={cube_up_pos_current['x']:.4f}, y={cube_up_pos_current['y']:.4f}, z={cube_up_pos_current['z']:.4f}")
+            print(f"cube_down:    x={cube_down_pos_current['x']:.4f}, y={cube_down_pos_current['y']:.4f}, z={cube_down_pos_current['z']:.4f}")
+            print(f"attractor:    x={attractor_pos.x:.4f}, y={attractor_pos.y:.4f}, z={attractor_pos.z:.4f}")
+            print(f"panda_hand:   x={panda_hand_pos['x']:.4f}, y={panda_hand_pos['y']:.4f}, z={panda_hand_pos['z']:.4f}")
+            print(f"=========================")
+        
+        # 启动抓取/放置规划
+        if (not plan_state['running']) and t >= plan_state['start_time']:
+            plan_state['running'] = True
+            plan_state['current_time'] = t
+            plan_state['dt'] = dt
+            plan_state = update_pick_and_place(
+                gym, viewer, envs, attractor_handles, axes_geom, sphere_geom,
+                plan_state, finger_dof_indices, franka_handles, franka_mids,
+            )
+        elif plan_state['running']:
+            plan_state['current_time'] = t
+            plan_state['dt'] = dt
+            plan_state = update_pick_and_place(
+                gym, viewer, envs, attractor_handles, axes_geom, sphere_geom,
+                plan_state, finger_dof_indices, franka_handles, franka_mids,
+            )
 
         # 执行物理模拟步骤
         gym.simulate(sim)
         gym.fetch_results(sim, True)
+
+        #　可视化摄像头坐标系
+        draw_camera_axes_single(
+            gym, viewer, envs[0], camera_axes_geom,
+            camera_params["pos1"],
+            camera_params["rotation_axis1"],
+            camera_params["rotation_angle1"],
+        )
+        draw_camera_axes_single(
+            gym, viewer, envs[0], camera_axes_geom,
+            camera_params["pos2"],
+            camera_params["rotation_axis2a"],
+            camera_params["rotation_angle2a"],
+            camera_params.get("rotation_axis2b"),
+            camera_params.get("rotation_angle2b", 0),
+        )
+        draw_camera_axes_single(
+            gym, viewer, envs[0], camera_axes_geom,
+            camera_params["pos3"],
+            camera_params["rotation_axis3"],
+            camera_params["rotation_angle3"],
+        )
+        draw_camera_axes_single(
+            gym, viewer, envs[0], camera_axes_geom,
+            camera_params["pos4"],
+            camera_params["rotation_axis4a"],
+            camera_params["rotation_angle4a"],
+            camera_params.get("rotation_axis4b"),
+            camera_params.get("rotation_angle4b", 0),
+        )
+
+        # 可视化机器人基座坐标系
+        base_axes_geom = gymutil.AxesGeometry(2.0)  # 较大的坐标系，长度2.0m
+        base_transform = gymapi.Transform()
+        base_transform.p = gymapi.Vec3(0.0, 0.0, 0.0)  # 基座位置
+        base_transform.r = gymapi.Quat(0.0, 0.0, 0.0, 1.0)  # 无旋转
+        gymutil.draw_lines(base_axes_geom, gym, viewer, envs[0], base_transform)
 
         # 执行渲染步骤（更新可视化）
         gym.step_graphics(sim)
@@ -778,32 +1030,76 @@ axes_geom = scene_data['axes_geom']
 sphere_geom = scene_data['sphere_geom']
 camera_axes_geom = scene_data['camera_axes_geom']
 cube_handles = scene_data['cube_handles']
+finger_dof_indices = scene_data['finger_dof_indices']
+cube_down_pos = scene_data['cube_down_pos']
+cube_up_pos = scene_data['cube_up_pos']
+initial_hand_pose = scene_data['initial_hand_pose']
 
 # 初始化机器人状态
 initialize_robot_states(gym, envs, franka_handles, franka_mids, franka_num_dofs)
 
+# 初始化后重新获取手的位置并更新吸引子
+robot_props_updated = gym.get_actor_rigid_body_states(envs[0], franka_handles[0], gymapi.STATE_POS)
+hand_pose_updated = robot_props_updated['pose'][:][scene_data['body_dict'][hand_name]]
+
+# 更新吸引子目标位置为初始化后的手的位置（下方0.1m）
+updated_attractor_target = gymapi.Transform(
+    p=gymapi.Vec3(hand_pose_updated['p']['x'], hand_pose_updated['p']['y'] - 0.1, hand_pose_updated['p']['z']),
+    r=gymapi.Quat(hand_pose_updated['r']['x'], hand_pose_updated['r']['y'], hand_pose_updated['r']['z'], hand_pose_updated['r']['w'])
+)
+gym.set_attractor_target(envs[0], attractor_handles[0], updated_attractor_target)
+
 # 设置观察角度
-cam_pos = gymapi.Vec3(-4.0, 4.0, -1.0)
-cam_target = gymapi.Vec3(0.0, 2.0, 1.0)
+cam_pos = gymapi.Vec3(2.0, 2.0, 2.0)
+cam_target = gymapi.Vec3(0.5, 0.3, 0.0)
 gym.viewer_camera_look_at(viewer, None, cam_pos, cam_target)
 
 sim_start_time = 1.5
 
+# 构建抓取-放置规划（使用更新后的吸引子位置）
+plan_initial_pose = gymapi.Transform(
+    p=gymapi.Vec3(updated_attractor_target.p.x, updated_attractor_target.p.y, updated_attractor_target.p.z),
+    r=gymapi.Quat(updated_attractor_target.r.x, updated_attractor_target.r.y, updated_attractor_target.r.z, updated_attractor_target.r.w),
+)
+motion_plan = build_pick_place_plan(
+    plan_initial_pose, 
+    cube_up_pos, 
+    cube_down_pos,
+    hover_offset=0.2,      # 悬停在立方体上方20cm
+    grasp_offset=0.1,      # 抓取时夹爪在立方体上方10cm（考虑立方体高度约10cm）
+    release_offset=0.15    # 放置时留15cm高度
+)
+
+plan_state = {
+    'plan': motion_plan,        # 抓取-放置动作序列
+    'phase_idx': 0,             # 当前阶段索引
+    'phase_elapsed': 0.0,           # 当前阶段已过时间
+    'current_pose': plan_initial_pose,      # 当前吸引子姿态
+    'running': False,           # 规划是否正在运行
+    'current_time': 0.0,            # 当前模拟时间
+    'dt': 0.0,          # 时间步长
+    'start_time': sim_start_time,           # 规划开始时间
+}
+
 # 初始化摄像头系统
 camera_system = initialize_camera_system(
     output_dir="./camera_outputs",
-    capture_frequency=10,
-    capture_duration=10.0,
+    capture_frequency=10,           # 每秒10帧
+    capture_duration=17.0,          # 总共采集17秒
     start_time=sim_start_time
 )
+
+
 
 # 运行主模拟循环
 print("\nStarting simulation...")
 run_simulation(
     gym, sim, viewer, envs, franka_handles, attractor_handles, camera_handles,
-    franka_mids, franka_num_dofs, axes_geom, sphere_geom,
-    camera_system, cube_handles,
-    sim_start_time=sim_start_time
+    franka_mids, franka_num_dofs, axes_geom, sphere_geom, camera_axes_geom,
+    camera_system, cube_handles, plan_state, finger_dof_indices,
+    sim_start_time=sim_start_time,
+    body_dict=scene_data['body_dict'],
+    hand_name=hand_name
 )
 
 # 模拟完成
