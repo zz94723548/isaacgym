@@ -251,9 +251,9 @@ def configure_robot_dof_properties(gym, env, robot_handle, franka_dof_props):
 
 # 设置机器人关节属性的具体参数
 def setup_robot_dof_properties(dof_props):
-    # 设置所有关节的基础刚度和阻尼
-    dof_props['stiffness'].fill(1000.0)
-    dof_props['damping'].fill(1000.0)
+    # 设置所有关节的基础刚度和阻尼（降低以让attractor主导控制）
+    dof_props['stiffness'].fill(10.0)   # 从1000降到10，减少关节控制器干扰
+    dof_props['damping'].fill(10.0)     # 从1000降到10，减少阻尼干扰
     
     # 前两个关节使用位置驱动模式
     dof_props["driveMode"][0:2] = gymapi.DOF_MODE_POS
@@ -891,7 +891,7 @@ def command_gripper(gym, envs, robot_handles, finger_dof_indices, target_width, 
 
 # 更新抓取/放置吸引子位置和夹爪状态
 def update_pick_and_place(gym, viewer, envs, attractor_handles, axes_geom, sphere_geom,
-                          plan_state, finger_dof_indices, robot_handles, base_dof_pos):
+                          plan_state, finger_dof_indices, robot_handles, base_dof_pos, body_dict=None, hand_name="panda_hand"):
     if not plan_state['running']:
         return plan_state
 
@@ -906,8 +906,9 @@ def update_pick_and_place(gym, viewer, envs, attractor_handles, axes_geom, spher
 
     phase = plan_state['plan'][phase_idx]
     plan_state['phase_elapsed'] += dt
+    
+    # 线性插值计算当前目标位置和姿态
     alpha = min(plan_state['phase_elapsed'] / max(phase['duration'], 1e-4), 1.0)
-
     target_pos = lerp_vec(phase['start'], phase['goal'], alpha)
     target_rot = slerp_quat(phase['start_rot'], phase['goal_rot'], alpha)
     
@@ -1008,7 +1009,12 @@ def run_simulation(gym, sim, viewer, envs, franka_handles, attractor_handles, ca
             # 获取吸引子位置（从 plan_state 中取）
             attractor_pos = plan_state['current_pose'].p
             
-            print(f"\n[t={t:.2f}s] === 实时位置信息 ===")
+            # 获取当前阶段名称
+            current_phase_name = "idle"
+            if plan_state['running'] and plan_state['phase_idx'] < len(plan_state['plan']):
+                current_phase_name = plan_state['plan'][plan_state['phase_idx']]['name']
+            
+            print(f"\n[t={t:.2f}s] === 实时位置信息 === [阶段: {current_phase_name}]")
             print(f"cube_up:          x={cube_up_pos_current['x']:.4f}, y={cube_up_pos_current['y']:.4f}, z={cube_up_pos_current['z']:.4f}")
             print(f"cube_down:        x={cube_down_pos_current['x']:.4f}, y={cube_down_pos_current['y']:.4f}, z={cube_down_pos_current['z']:.4f}")
             print(f"attractor:        x={attractor_pos.x:.4f}, y={attractor_pos.y:.4f}, z={attractor_pos.z:.4f}")
@@ -1022,6 +1028,7 @@ def run_simulation(gym, sim, viewer, envs, franka_handles, attractor_handles, ca
             plan_state = update_pick_and_place(
                 gym, viewer, envs, attractor_handles, axes_geom, sphere_geom,
                 plan_state, finger_dof_indices, franka_handles, franka_mids,
+                body_dict=body_dict, hand_name=hand_name
             )
         elif plan_state['running']:
             plan_state['current_time'] = t
@@ -1029,6 +1036,7 @@ def run_simulation(gym, sim, viewer, envs, franka_handles, attractor_handles, ca
             plan_state = update_pick_and_place(
                 gym, viewer, envs, attractor_handles, axes_geom, sphere_geom,
                 plan_state, finger_dof_indices, franka_handles, franka_mids,
+                body_dict=body_dict, hand_name=hand_name
             )
 
         # 执行物理模拟步骤
@@ -1182,7 +1190,9 @@ scene_data = build_scene(
     gym, sim, viewer, franka_asset, workbench_asset,cube_down_asset,cube_up_asset,
     num_envs=num_envs,
     spacing=spacing,
-    hand_name=hand_name
+    hand_name=hand_name,
+    attractor_stiffness=5e6,  # 增加10倍刚度以提高精度
+    attractor_damping=5e4     # 增加10倍阻尼以减少振荡
 )
 
 # 提取场景数据供后续使用
