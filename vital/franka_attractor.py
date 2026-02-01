@@ -22,7 +22,7 @@ from isaacgym import gymutil
 # ===============================
 # 坐标系可视化开关
 # ===============================
-VISUALIZE_AXES = False  # 设置为 True 显示所有坐标系，False 关闭所有坐标系绘制
+VISUALIZE_AXES = True  # 设置为 True 显示所有坐标系，False 关闭所有坐标系绘制
 
 
 # ===============================
@@ -152,7 +152,6 @@ def load_cube_asset(gym, sim, asset_root, asset_file):
     
     return cube_asset
 
-
 # ===============================
 # 第三部分：场景构建
 # ===============================
@@ -182,6 +181,38 @@ def create_visualization_geometries():
     
     return axes_geom, sphere_geom
 
+# 计算从刚体位置沿其局部Z轴偏移后的世界坐标位置
+def compute_fingertip_position(finger_pose, offset_z=0.045):
+    """
+    从指尖刚体原点沿其局部Z轴正方向偏移，得到真正的指尖位置
+    
+    Args:
+        finger_pose: 刚体姿态字典，包含'p'(位置)和'r'(四元数旋转)
+        offset_z: 沿局部Z轴的偏移距离(米)，Franka指尖约0.045m
+    
+    Returns:
+        真正指尖的世界坐标(x, y, z)元组
+    """
+    # 获取刚体的位置和四元数
+    pos = finger_pose['p']
+    quat = finger_pose['r']
+    
+    # 将四元数转换为旋转矩阵来获取局部Z轴方向
+    # 四元数 q = (x, y, z, w) 对应的旋转矩阵第三列就是局部Z轴在世界坐标系中的方向
+    x, y, z, w = quat['x'], quat['y'], quat['z'], quat['w']
+    
+    # 计算旋转矩阵的第三列（局部Z轴方向）
+    z_axis_x = 2 * (x * z + w * y)
+    z_axis_y = 2 * (y * z - w * x)
+    z_axis_z = 1 - 2 * (x * x + y * y)
+    
+    # 沿局部Z轴偏移
+    true_tip_x = pos['x'] + offset_z * z_axis_x
+    true_tip_y = pos['y'] + offset_z * z_axis_y
+    true_tip_z = pos['z'] + offset_z * z_axis_z
+    
+    return (true_tip_x, true_tip_y, true_tip_z)
+
 # 在环境中创建工作台演员
 def create_workbench_actor(gym, env, workbench_asset, position, scale=1.0, env_id=0):
     workbench_pose = gymapi.Transform()
@@ -208,7 +239,11 @@ def create_robot_actor(gym, env, robot_asset, pose, env_id, hand_name="panda_han
     props = gym.get_actor_rigid_body_states(env, robot_handle, gymapi.STATE_POS)    # 获取刚体状态
     hand_handle = gym.find_actor_rigid_body_handle(env, robot_handle, hand_name)    # 获取末端执行器句柄
     
-    return robot_handle, body_dict, dof_dict, props, hand_handle
+    # 获取左右指尖的刚体句柄
+    left_finger_handle = gym.find_actor_rigid_body_handle(env, robot_handle, "panda_leftfinger")
+    right_finger_handle = gym.find_actor_rigid_body_handle(env, robot_handle, "panda_rightfinger")
+    
+    return robot_handle, body_dict, dof_dict, props, hand_handle, left_finger_handle, right_finger_handle
 
 # 配置机器人关节属性
 def configure_robot_dof_properties(gym, env, robot_handle, franka_dof_props):
@@ -410,8 +445,8 @@ camera_params = {
 }
 
 # 构建完整的模拟场景
-def build_scene(gym, sim, viewer, robot_asset, workbench_asset, cube_down_asset, cube_up_asset, num_envs=1, spacing=1.0, 
-                hand_name="panda_hand", attractor_stiffness=5e5, attractor_damping=5e3):
+def build_scene(gym, sim, viewer, robot_asset, workbench_asset, cube_down_asset, cube_up_asset,
+                num_envs=1, spacing=1.0, hand_name="panda_hand", attractor_stiffness=5e5, attractor_damping=5e3):
     # 环境布局参数
     env_lower = gymapi.Vec3(-spacing, 0.0, -spacing)
     env_upper = gymapi.Vec3(spacing, spacing, spacing)
@@ -438,7 +473,7 @@ def build_scene(gym, sim, viewer, robot_asset, workbench_asset, cube_down_asset,
     temp_env = gym.create_env(sim, env_lower, env_upper, num_per_row)
     
     # 为第一个环境创建机器人
-    robot_handle, body_dict, dof_dict, props, hand_handle = create_robot_actor(
+    robot_handle, body_dict, dof_dict, props, hand_handle, left_finger_handle, right_finger_handle = create_robot_actor(
         gym, temp_env, robot_asset, robot_pose, 0, hand_name
     )
     
@@ -663,6 +698,8 @@ def build_scene(gym, sim, viewer, robot_asset, workbench_asset, cube_down_asset,
         'cube_up_pos': cube_up_pos,
         'initial_hand_pose': attractor_props.target,
         'hand_camera_mount_tf': hand_camera_mount_tf,
+        'left_finger_handle': left_finger_handle,
+        'right_finger_handle': right_finger_handle,
     }
 
 # ===============================
@@ -806,13 +843,15 @@ def build_pick_place_plan(initial_pose, cube_up_pos, cube_down_pos,
     # 夹爪向下的旋转（绕X轴180度，使夹爪指向-Y方向）
     grasp_rot = gymapi.Quat(0.707106, 0.0, 0.0, 0.707106)  # 向下姿态
     
-    # 计算吸引子目标位置
     hover_up = (cube_up_pos[0], cube_up_pos[1] + hover_offset, cube_up_pos[2])
     grasp_pos = (cube_up_pos[0], cube_up_pos[1] + grasp_offset, cube_up_pos[2])
     lift_pos = hover_up
     hover_down = (cube_down_pos[0], cube_down_pos[1] + hover_offset, cube_down_pos[2])
     place_pos = (cube_down_pos[0], cube_down_pos[1] + release_offset, cube_down_pos[2])
     retreat_pos = (cube_down_pos[0], cube_down_pos[1] + hover_offset + 0.05, cube_down_pos[2])
+    print("Planning to pick and place the cube.")
+
+
 
     # finger_width 代表两指张开的总宽度
     finger_open = 0.08
@@ -934,11 +973,31 @@ def run_simulation(gym, sim, viewer, envs, franka_handles, attractor_handles, ca
             # 获取立方体状态
             cube_up_props = gym.get_actor_rigid_body_states(envs[0], cube_handles[0], gymapi.STATE_POS)
             cube_down_props = gym.get_actor_rigid_body_states(envs[0], cube_handles[1], gymapi.STATE_POS)
-            
+
             # 获取各个刚体的位置
             hand_idx = body_dict[hand_name]
             panda_hand_pose_data = robot_props['pose'][:][hand_idx]
             panda_hand_pos = panda_hand_pose_data['p']
+            
+            # 获取指尖位置
+            left_finger_idx = body_dict['panda_leftfinger']
+            right_finger_idx = body_dict['panda_rightfinger']
+            left_finger_pose_data = robot_props['pose'][:][left_finger_idx]
+            right_finger_pose_data = robot_props['pose'][:][right_finger_idx]
+            left_finger_pos = left_finger_pose_data['p']
+            right_finger_pos = right_finger_pose_data['p']
+            
+            # 计算刚体原点中心
+            fingertip_center_x = (left_finger_pos['x'] + right_finger_pos['x']) / 2.0
+            fingertip_center_y = (left_finger_pos['y'] + right_finger_pos['y']) / 2.0
+            fingertip_center_z = (left_finger_pos['z'] + right_finger_pos['z']) / 2.0
+            
+            # 计算真正的指尖位置
+            left_true_tip_rt = compute_fingertip_position(left_finger_pose_data, offset_z=0.045)
+            right_true_tip_rt = compute_fingertip_position(right_finger_pose_data, offset_z=0.045)
+            true_tip_center_x_rt = (left_true_tip_rt[0] + right_true_tip_rt[0]) / 2.0
+            true_tip_center_y_rt = (left_true_tip_rt[1] + right_true_tip_rt[1]) / 2.0
+            true_tip_center_z_rt = (left_true_tip_rt[2] + right_true_tip_rt[2]) / 2.0
             
             cube_up_pose_data = cube_up_props['pose'][:][0]
             cube_up_pos_current = cube_up_pose_data['p']
@@ -950,11 +1009,10 @@ def run_simulation(gym, sim, viewer, envs, franka_handles, attractor_handles, ca
             attractor_pos = plan_state['current_pose'].p
             
             print(f"\n[t={t:.2f}s] === 实时位置信息 ===")
-            print(f"cube_up:      x={cube_up_pos_current['x']:.4f}, y={cube_up_pos_current['y']:.4f}, z={cube_up_pos_current['z']:.4f}")
-            print(f"cube_down:    x={cube_down_pos_current['x']:.4f}, y={cube_down_pos_current['y']:.4f}, z={cube_down_pos_current['z']:.4f}")
-            print(f"attractor:    x={attractor_pos.x:.4f}, y={attractor_pos.y:.4f}, z={attractor_pos.z:.4f}")
-            print(f"panda_hand:   x={panda_hand_pos['x']:.4f}, y={panda_hand_pos['y']:.4f}, z={panda_hand_pos['z']:.4f}")
-            print(f"=========================")
+            print(f"cube_up:          x={cube_up_pos_current['x']:.4f}, y={cube_up_pos_current['y']:.4f}, z={cube_up_pos_current['z']:.4f}")
+            print(f"cube_down:        x={cube_down_pos_current['x']:.4f}, y={cube_down_pos_current['y']:.4f}, z={cube_down_pos_current['z']:.4f}")
+            print(f"attractor:        x={attractor_pos.x:.4f}, y={attractor_pos.y:.4f}, z={attractor_pos.z:.4f}")
+            print(f"panda_hand:       x={panda_hand_pos['x']:.4f}, y={panda_hand_pos['y']:.4f}, z={panda_hand_pos['z']:.4f}")
         
         # 启动抓取/放置规划
         if (not plan_state['running']) and t >= plan_state['start_time']:
@@ -1007,6 +1065,42 @@ def run_simulation(gym, sim, viewer, envs, franka_handles, attractor_handles, ca
                 camera_params.get("rotation_axis4b"),
                 camera_params.get("rotation_angle4b", 0),
             )
+            
+            # 获取左右指尖的当前位置和姿态
+            current_robot_props = gym.get_actor_rigid_body_states(envs[0], franka_handles[0], gymapi.STATE_POS)
+            left_finger_idx = body_dict['panda_leftfinger']
+            right_finger_idx = body_dict['panda_rightfinger']
+            current_left_finger = current_robot_props['pose'][:][left_finger_idx]
+            current_right_finger = current_robot_props['pose'][:][right_finger_idx]
+            
+            # 绘制真正指尖位置处的坐标系
+            left_true_tip_viz = compute_fingertip_position(current_left_finger, offset_z=0.045)
+            right_true_tip_viz = compute_fingertip_position(current_right_finger, offset_z=0.045)
+            
+            true_tip_axes_geom = gymutil.AxesGeometry(0.08)
+            
+            left_true_tip_tf = gymapi.Transform(
+                p=gymapi.Vec3(left_true_tip_viz[0], left_true_tip_viz[1], left_true_tip_viz[2]),
+                r=gymapi.Quat(current_left_finger['r']['x'], current_left_finger['r']['y'], current_left_finger['r']['z'], current_left_finger['r']['w'])
+            )
+            right_true_tip_tf = gymapi.Transform(
+                p=gymapi.Vec3(right_true_tip_viz[0], right_true_tip_viz[1], right_true_tip_viz[2]),
+                r=gymapi.Quat(current_right_finger['r']['x'], current_right_finger['r']['y'], current_right_finger['r']['z'], current_right_finger['r']['w'])
+            )
+            
+            gymutil.draw_lines(true_tip_axes_geom, gym, viewer, envs[0], left_true_tip_tf)
+            gymutil.draw_lines(true_tip_axes_geom, gym, viewer, envs[0], right_true_tip_tf)
+            
+            # 绘制绿色小球标记
+            sphere_rot_tip = gymapi.Quat.from_euler_zyx(0.5 * math.pi, 0, 0)
+            sphere_pose_tip = gymapi.Transform(r=sphere_rot_tip)
+            tip_marker_geom = gymutil.WireframeSphereGeometry(0.01, 8, 8, sphere_pose_tip, color=(0, 1, 0))
+            
+            left_tip_marker_tf = gymapi.Transform(p=gymapi.Vec3(left_true_tip_viz[0], left_true_tip_viz[1], left_true_tip_viz[2]))
+            right_tip_marker_tf = gymapi.Transform(p=gymapi.Vec3(right_true_tip_viz[0], right_true_tip_viz[1], right_true_tip_viz[2]))
+            
+            gymutil.draw_lines(tip_marker_geom, gym, viewer, envs[0], left_tip_marker_tf)
+            gymutil.draw_lines(tip_marker_geom, gym, viewer, envs[0], right_tip_marker_tf)
 
         # 可视化机器人基座坐标系
         if VISUALIZE_AXES:
@@ -1109,6 +1203,8 @@ finger_dof_indices = scene_data['finger_dof_indices']
 cube_down_pos = scene_data['cube_down_pos']
 cube_up_pos = scene_data['cube_up_pos']
 initial_hand_pose = scene_data['initial_hand_pose']
+left_finger_handle = scene_data['left_finger_handle']
+right_finger_handle = scene_data['right_finger_handle']
 
 # 初始化机器人状态
 initialize_robot_states(gym, envs, franka_handles, franka_mids, franka_num_dofs)
@@ -1117,11 +1213,23 @@ initialize_robot_states(gym, envs, franka_handles, franka_mids, franka_num_dofs)
 robot_props_updated = gym.get_actor_rigid_body_states(envs[0], franka_handles[0], gymapi.STATE_POS)
 hand_pose_updated = robot_props_updated['pose'][:][scene_data['body_dict'][hand_name]]
 
-print(
-    "Eye-in-hand mount base (panda_hand) world pose -> "
-    f"pos: ({hand_pose_updated['p']['x']:.4f}, {hand_pose_updated['p']['y']:.4f}, {hand_pose_updated['p']['z']:.4f}), "
-    f"quat: ({hand_pose_updated['r']['x']:.4f}, {hand_pose_updated['r']['y']:.4f}, {hand_pose_updated['r']['z']:.4f}, {hand_pose_updated['r']['w']:.4f})"
-)
+# 获取左右指尖的位置
+left_finger_idx = scene_data['body_dict']['panda_leftfinger']
+right_finger_idx = scene_data['body_dict']['panda_rightfinger']
+left_finger_pose = robot_props_updated['pose'][:][left_finger_idx]
+right_finger_pose = robot_props_updated['pose'][:][right_finger_idx]
+
+# 计算指尖中心点位置（刚体原点）
+fingertip_center_x = (left_finger_pose['p']['x'] + right_finger_pose['p']['x']) / 2.0
+fingertip_center_y = (left_finger_pose['p']['y'] + right_finger_pose['p']['y']) / 2.0
+fingertip_center_z = (left_finger_pose['p']['z'] + right_finger_pose['p']['z']) / 2.0
+
+# 计算真正的指尖位置（沿Z轴偏移）
+left_true_tip = compute_fingertip_position(left_finger_pose, offset_z=0.045)
+right_true_tip = compute_fingertip_position(right_finger_pose, offset_z=0.045)
+true_tip_center_x = (left_true_tip[0] + right_true_tip[0]) / 2.0
+true_tip_center_y = (left_true_tip[1] + right_true_tip[1]) / 2.0
+true_tip_center_z = (left_true_tip[2] + right_true_tip[2]) / 2.0
 
 # 绘制夹爪(panda_hand)的坐标系用于可视化
 hand_axes_geom = gymutil.AxesGeometry(0.15)  # 手坐标系，长度0.15m
@@ -1132,12 +1240,26 @@ if VISUALIZE_AXES:
     gymutil.draw_lines(hand_axes_geom, gym, viewer, envs[0], hand_transform)
 print(f"Hand (panda_hand) coordinate frame drawn at position")
 
-print(
-    "Eye-in-hand relative mount (hand frame) -> offset: "
-    f"{camera_params['hand_cam_offset']}, primary axis/angle: "
-    f"{camera_params['hand_cam_axis_primary']}/{camera_params['hand_cam_angle_primary']} deg, "
-    f"secondary axis/angle: {camera_params['hand_cam_axis_secondary']}/{camera_params['hand_cam_angle_secondary']} deg"
-)
+# 绘制真正指尖位置的坐标系
+if VISUALIZE_AXES:
+    # 创建指尖坐标系几何体
+    true_tip_axes_geom = gymutil.AxesGeometry(0.08)  # 指尖坐标系，长度0.08m
+    
+    # 左指尖真正位置的坐标系
+    left_finger_quat_for_true_tip = gymapi.Quat(left_finger_pose['r']['x'], left_finger_pose['r']['y'], left_finger_pose['r']['z'], left_finger_pose['r']['w'])
+    left_true_tip_transform = gymapi.Transform()
+    left_true_tip_transform.p = gymapi.Vec3(left_true_tip[0], left_true_tip[1], left_true_tip[2])
+    left_true_tip_transform.r = left_finger_quat_for_true_tip
+    
+    # 右指尖真正位置的坐标系
+    right_finger_quat_for_true_tip = gymapi.Quat(right_finger_pose['r']['x'], right_finger_pose['r']['y'], right_finger_pose['r']['z'], right_finger_pose['r']['w'])
+    right_true_tip_transform = gymapi.Transform()
+    right_true_tip_transform.p = gymapi.Vec3(right_true_tip[0], right_true_tip[1], right_true_tip[2])
+    right_true_tip_transform.r = right_finger_quat_for_true_tip
+    
+    gymutil.draw_lines(true_tip_axes_geom, gym, viewer, envs[0], left_true_tip_transform)
+    gymutil.draw_lines(true_tip_axes_geom, gym, viewer, envs[0], right_true_tip_transform)
+    print(f"Left and right TRUE fingertip coordinate frames drawn")
 
 # 更新吸引子目标位置为初始化后的手的位置（下方0.1m）
 updated_attractor_target = gymapi.Transform(
