@@ -1,0 +1,5 @@
+Frame: 0150
+Force  (N):  x=-0.016713, y=-0.021853, z=0.047701
+Torque (Nm): x=-0.001139, y=0.000676, z=-0.000036
+Force Magnitude:  0.055066 N
+Torque Magnitude: 0.001325 Nm

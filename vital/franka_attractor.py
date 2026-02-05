@@ -18,6 +18,8 @@ import os
 import numpy as np
 from isaacgym import gymapi
 from isaacgym import gymutil
+from isaacgym import gymtorch
+import torch
 
 # ===============================
 # 坐标系可视化开关
@@ -119,6 +121,25 @@ def load_robot_asset(gym, sim, asset_root, asset_file, asset_options):
     if robot_asset is None:
         print("*** Failed to load asset: %s" % asset_file)
         quit()
+    
+    # 获取右指尖刚体索引
+    right_finger_body_idx = gym.find_asset_rigid_body_index(robot_asset, "panda_rightfinger")
+    
+    # 创建触觉传感器属性
+    sensor_props = gymapi.ForceSensorProperties()
+    sensor_props.enable_forward_dynamics_forces = True   # 启用以捕获重力等动力学力
+    sensor_props.enable_constraint_solver_forces = True  # 约束求解器力
+    sensor_props.use_world_frame = False  # 使用局部坐标系
+    
+    # 在右指尖刚体上创建力传感器
+    # 传感器位置：沿局部Z轴偏移0.045m到真实接触点，沿Y轴偏移0.002m（2mm）
+    sensor_pose = gymapi.Transform()
+    sensor_pose.p = gymapi.Vec3(0.0, 0.002, 0.045)  # 局部坐标系下的偏移 (x, y, z)
+    sensor_pose.r = gymapi.Quat(0.0, 0.0, 0.0, 1.0)
+    
+    sensor_idx = gym.create_asset_force_sensor(robot_asset, right_finger_body_idx, sensor_pose, sensor_props)
+    
+    print(f"Created force sensor on panda_rightfinger (body_idx={right_finger_body_idx}, sensor_idx={sensor_idx})")
     
     return robot_asset
 
@@ -712,6 +733,43 @@ def setup_camera_output_directory(output_dir="./camera_outputs"):
         os.makedirs(output_dir)
     print(f"Camera output directory created at {output_dir}")
 
+# 创建触觉传感器输出目录
+def setup_gel_output_directory(output_dir="./camera_outputs/gel"):
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+    print(f"Gel sensor output directory created at {output_dir}")
+
+# 保存触觉传感器数据（快速版本：直接保存numpy数组和文本）
+def save_gel_sensor_data(force_x, force_y, force_z, torque_x, torque_y, torque_z, 
+                         output_dir="./camera_outputs/gel", capture_count=0):
+    """
+    快速保存力传感器数据为numpy文件和文本文件
+    
+    Args:
+        force_x, force_y, force_z: 力的三个分量 (N)
+        torque_x, torque_y, torque_z: 力矩的三个分量 (Nm)
+        output_dir: 输出目录
+        capture_count: 捕获计数
+    """
+    # 组织数据
+    sensor_data = np.array([force_x, force_y, force_z, torque_x, torque_y, torque_z])
+    
+    # 保存为numpy二进制文件（最快）
+    npy_filename = f"{output_dir}/{capture_count:04d}.npy"
+    np.save(npy_filename, sensor_data)
+    
+    # 同时保存为文本文件（方便查看）
+    txt_filename = f"{output_dir}/{capture_count:04d}.txt"
+    force_magnitude = np.sqrt(force_x**2 + force_y**2 + force_z**2)
+    torque_magnitude = np.sqrt(torque_x**2 + torque_y**2 + torque_z**2)
+    
+    with open(txt_filename, 'w') as f:
+        f.write(f"Frame: {capture_count:04d}\n")
+        f.write(f"Force  (N):  x={force_x:.6f}, y={force_y:.6f}, z={force_z:.6f}\n")
+        f.write(f"Torque (Nm): x={torque_x:.6f}, y={torque_y:.6f}, z={torque_z:.6f}\n")
+        f.write(f"Force Magnitude:  {force_magnitude:.6f} N\n")
+        f.write(f"Torque Magnitude: {torque_magnitude:.6f} Nm\n")
+
 # 渲染并保存摄像头图像
 def render_and_save_camera_images(gym, sim, envs, camera_handles, 
                                    output_dir="./camera_outputs", 
@@ -747,6 +805,7 @@ def initialize_camera_system(output_dir="./camera_outputs",
                             start_time=1.5):
     # 创建输出目录
     setup_camera_output_directory(output_dir)
+    setup_gel_output_directory(f"{output_dir}/gel")
     
     # 计算采集间隔
     capture_interval = 1.0 / capture_frequency
@@ -958,12 +1017,33 @@ def run_simulation(gym, sim, viewer, envs, franka_handles, attractor_handles, ca
     print(f"Initial panda_hand position: x={hand_pose['p']['x']:.4f}, y={hand_pose['p']['y']:.4f}, z={hand_pose['p']['z']:.4f}")
     print(f"Initial panda_hand orientation: x={hand_pose['r']['x']:.4f}, y={hand_pose['r']['y']:.4f}, z={hand_pose['r']['z']:.4f}, w={hand_pose['r']['w']:.4f}")
 
+    # 获取力传感器张量（仅需在循环外获取一次）
+    gym.prepare_sim(sim)
+    sensor_tensor = gym.acquire_force_sensor_tensor(sim)
+    force_sensor_data = gymtorch.wrap_tensor(sensor_tensor)
+    
+    # 零点校准标志和偏移量
+    sensor_zero_offset = None
+    calibration_done = False
+    calibration_time = sim_start_time - 0.5  # 在任务开始前0.5秒进行校准
+    
     # 主模拟循环
     while not gym.query_viewer_has_closed(viewer):
         # 获取当前模拟时间
         t = gym.get_sim_time(sim)
         dt = t - last_t
         last_t = t
+        
+        # 刷新力传感器数据
+        gym.refresh_force_sensor_tensor(sim)
+        
+        # 在机器人稳定后进行零点校准（仅执行一次）
+        if not calibration_done and t >= calibration_time:
+            sensor_reading_initial = force_sensor_data.view(-1, 6)[0]
+            sensor_zero_offset = sensor_reading_initial.clone()
+            calibration_done = True
+            print(f"\n[t={t:.2f}s] 传感器零点校准完成")
+            print(f"零点偏移: Force=[{sensor_zero_offset[0]:.4f}, {sensor_zero_offset[1]:.4f}, {sensor_zero_offset[2]:.4f}], Torque=[{sensor_zero_offset[3]:.4f}, {sensor_zero_offset[4]:.4f}, {sensor_zero_offset[5]:.4f}]\n")
         
         # 实时打印位置信息
         if body_dict and t - last_print_time >= print_interval:
@@ -987,6 +1067,26 @@ def run_simulation(gym, sim, viewer, envs, franka_handles, attractor_handles, ca
             right_finger_pose_data = robot_props['pose'][:][right_finger_idx]
             left_finger_pos = left_finger_pose_data['p']
             right_finger_pos = right_finger_pose_data['p']
+            
+            # 读取右指尖触觉传感器数据（每个环境的第一个传感器，索引为0）
+            sensor_idx = 0  # 第一个环境的第一个传感器
+            # 张量形状: [num_envs, num_sensors_per_env, 6]
+            # 对于单个环境：force_sensor_data[0, 0, :] 或 force_sensor_data.view(-1, 6)[0, :]
+            sensor_reading = force_sensor_data.view(-1, 6)[sensor_idx]
+            # 减去零点偏移进行校准（如果校准已完成）
+            if calibration_done:
+                sensor_reading_calibrated = sensor_reading - sensor_zero_offset
+            else:
+                sensor_reading_calibrated = sensor_reading  # 校准前使用原始值
+            force_x = sensor_reading_calibrated[0].item()
+            force_y = sensor_reading_calibrated[1].item()
+            force_z = sensor_reading_calibrated[2].item()
+            torque_x = sensor_reading_calibrated[3].item()
+            torque_y = sensor_reading_calibrated[4].item()
+            torque_z = sensor_reading_calibrated[5].item()
+            
+            # 计算力的大小
+            force_magnitude = np.sqrt(force_x**2 + force_y**2 + force_z**2)
             
             # 计算刚体原点中心
             fingertip_center_x = (left_finger_pos['x'] + right_finger_pos['x']) / 2.0
@@ -1019,6 +1119,8 @@ def run_simulation(gym, sim, viewer, envs, franka_handles, attractor_handles, ca
             print(f"cube_down:        x={cube_down_pos_current['x']:.4f}, y={cube_down_pos_current['y']:.4f}, z={cube_down_pos_current['z']:.4f}")
             print(f"attractor:        x={attractor_pos.x:.4f}, y={attractor_pos.y:.4f}, z={attractor_pos.z:.4f}")
             print(f"panda_hand:       x={panda_hand_pos['x']:.4f}, y={panda_hand_pos['y']:.4f}, z={panda_hand_pos['z']:.4f}")
+            print(f"右指尖传感器:     force=({force_x:.4f}, {force_y:.4f}, {force_z:.4f}) N, |F|={force_magnitude:.4f} N")
+            print(f"                torque=({torque_x:.4f}, {torque_y:.4f}, {torque_z:.4f}) Nm")
         
         # 启动抓取/放置规划
         if (not plan_state['running']) and t >= plan_state['start_time']:
@@ -1099,16 +1201,19 @@ def run_simulation(gym, sim, viewer, envs, franka_handles, attractor_handles, ca
             gymutil.draw_lines(true_tip_axes_geom, gym, viewer, envs[0], left_true_tip_tf)
             gymutil.draw_lines(true_tip_axes_geom, gym, viewer, envs[0], right_true_tip_tf)
             
-            # 绘制绿色小球标记
+            # 绘制指尖标记球：左指尖绿色，右指尖红色（装有传感器）
             sphere_rot_tip = gymapi.Quat.from_euler_zyx(0.5 * math.pi, 0, 0)
             sphere_pose_tip = gymapi.Transform(r=sphere_rot_tip)
-            tip_marker_geom = gymutil.WireframeSphereGeometry(0.01, 8, 8, sphere_pose_tip, color=(0, 1, 0))
             
+            # 左指尖：绿色小球
+            left_marker_geom = gymutil.WireframeSphereGeometry(0.01, 8, 8, sphere_pose_tip, color=(0, 1, 0))
             left_tip_marker_tf = gymapi.Transform(p=gymapi.Vec3(left_true_tip_viz[0], left_true_tip_viz[1], left_true_tip_viz[2]))
-            right_tip_marker_tf = gymapi.Transform(p=gymapi.Vec3(right_true_tip_viz[0], right_true_tip_viz[1], right_true_tip_viz[2]))
+            gymutil.draw_lines(left_marker_geom, gym, viewer, envs[0], left_tip_marker_tf)
             
-            gymutil.draw_lines(tip_marker_geom, gym, viewer, envs[0], left_tip_marker_tf)
-            gymutil.draw_lines(tip_marker_geom, gym, viewer, envs[0], right_tip_marker_tf)
+            # 右指尖：红色大球（标记传感器位置）
+            right_marker_geom = gymutil.WireframeSphereGeometry(0.015, 12, 12, sphere_pose_tip, color=(1, 0, 0))
+            right_tip_marker_tf = gymapi.Transform(p=gymapi.Vec3(right_true_tip_viz[0], right_true_tip_viz[1], right_true_tip_viz[2]))
+            gymutil.draw_lines(right_marker_geom, gym, viewer, envs[0], right_tip_marker_tf)
 
         # 可视化机器人基座坐标系
         if VISUALIZE_AXES:
@@ -1125,6 +1230,30 @@ def run_simulation(gym, sim, viewer, envs, franka_handles, attractor_handles, ca
 
         # 摄像头拍摄逻辑
         if should_capture_frame(t, camera_system):
+            # 读取当前的触觉传感器数据
+            gym.refresh_force_sensor_tensor(sim)
+            sensor_idx = 0
+            sensor_reading = force_sensor_data.view(-1, 6)[sensor_idx]
+            # 应用零点校准（如果已完成）
+            if calibration_done:
+                sensor_reading_calibrated = sensor_reading - sensor_zero_offset
+            else:
+                sensor_reading_calibrated = sensor_reading
+            current_force_x = sensor_reading_calibrated[0].item()
+            current_force_y = sensor_reading_calibrated[1].item()
+            current_force_z = sensor_reading_calibrated[2].item()
+            current_torque_x = sensor_reading_calibrated[3].item()
+            current_torque_y = sensor_reading_calibrated[4].item()
+            current_torque_z = sensor_reading_calibrated[5].item()
+            
+            # 保存触觉传感器数据为图像
+            save_gel_sensor_data(
+                current_force_x, current_force_y, current_force_z,
+                current_torque_x, current_torque_y, current_torque_z,
+                output_dir=f"{camera_system['output_dir']}/gel",
+                capture_count=camera_system['capture_count']
+            )
+            
             # 渲染并保存摄像头图像
             render_and_save_camera_images(
                 gym, sim, envs, camera_handles,
