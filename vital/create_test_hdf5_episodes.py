@@ -29,8 +29,24 @@ for ep_id in range(5):
         f.create_dataset('observations/qpos', 
                         data=np.random.randn(num_timesteps, 4).astype(np.float32))
         
-        # 相机RGB图像
+        # 相机RGB图像 (5个相机)
         f.create_dataset('observations/images/realsence1', 
+                        data=np.random.randint(0, 255, 
+                                              (num_timesteps, 480, 640, 3), 
+                                              dtype=np.uint8))
+        f.create_dataset('observations/images/realsence2', 
+                        data=np.random.randint(0, 255, 
+                                              (num_timesteps, 480, 640, 3), 
+                                              dtype=np.uint8))
+        f.create_dataset('observations/images/realsence3', 
+                        data=np.random.randint(0, 255, 
+                                              (num_timesteps, 480, 640, 3), 
+                                              dtype=np.uint8))
+        f.create_dataset('observations/images/realsence4', 
+                        data=np.random.randint(0, 255, 
+                                              (num_timesteps, 480, 640, 3), 
+                                              dtype=np.uint8))
+        f.create_dataset('observations/images/realsence5', 
                         data=np.random.randint(0, 255, 
                                               (num_timesteps, 480, 640, 3), 
                                               dtype=np.uint8))

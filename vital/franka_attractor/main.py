@@ -16,7 +16,7 @@ from isaacgym import gymapi, gymutil, gymtorch
 # 导入配置和各个模块
 from config import SimulationConfig as Config
 from core import simulation, assets, scene
-from systems import camera, sensor, gripper, attractor, planner
+from systems import camera, sensor, gripper, attractor, planner, policy_runner
 from utils import math_utils, visualization, io_utils
 
 
@@ -44,6 +44,25 @@ def apply_random_cube_positions():
     
     Config.CUBE_DOWN_POS = (cube_down_x, y, cube_down_z)
     Config.CUBE_UP_POS = (cube_up_x, y, cube_up_z)
+
+
+def gel_vector_to_depth_strain_image(gel_vec, h=32, w=32, scale=1e4):
+    """将 6 轴触觉向量映射为在线推理使用的应变图 (H, W, 3)。"""
+    v = np.asarray(gel_vec, dtype=np.float64) * scale
+    if v.shape[0] != 6:
+        raise ValueError(f"gel 向量维度应为 6，实际为 {v.shape[0]}")
+    fx, fy, fz, tx, ty, tz = v
+
+    cy, cx = (h - 1) / 2.0, (w - 1) / 2.0
+    ys, xs = np.mgrid[0:h, 0:w].astype(np.float64)
+    dy = (ys - cy) / (h / 2.0)
+    dx = (xs - cx) / (w / 2.0)
+
+    normal_strain = fz + tx * dy - ty * dx
+    x_strain = fx + tz * dy
+    y_strain = fy - tz * dx
+
+    return np.stack([normal_strain, x_strain, y_strain], axis=-1).astype(np.float32)
 
 
 def setup_scene(gym, sim, viewer):
@@ -160,15 +179,39 @@ def initialize_systems(gym, sim, scene_data, viewer, output_dir=None):
         capture_duration=Config.CAPTURE_DURATION,
         start_time=Config.CAPTURE_START_TIME
     )
+
+    # 初始化在线策略推理系统（第三步：仅加载，不接入控制分支）
+    policy_system = None
+    if str(getattr(Config, "CONTROL_MODE", "planner")).lower() == "policy":
+        policy_system = policy_runner.load_policy_runner(Config)
+    else:
+        print("[PolicyRunner] skipped (CONTROL_MODE != 'policy')")
     
     # 构建动作规划
     robot_props = gym.get_actor_rigid_body_states(envs[0], robot_handles[0], gymapi.STATE_POS)
     hand_pose = robot_props['pose'][:][body_dict[Config.HAND_NAME]]
+
+    # 夹爪竖直向下的目标姿态（与 planner 中 grasp_rot 一致）
+    vertical_down_rot = gymapi.Quat(0.707106, 0.0, 0.0, 0.707106)
+    policy_mode = str(getattr(Config, "CONTROL_MODE", "planner")).lower() == "policy"
+    if policy_mode:
+        initial_rot = vertical_down_rot
+    else:
+        initial_rot = gymapi.Quat(
+            hand_pose['r']['x'], hand_pose['r']['y'], hand_pose['r']['z'], hand_pose['r']['w']
+        )
     
     initial_pose = gymapi.Transform(
         p=gymapi.Vec3(hand_pose['p']['x'], hand_pose['p']['y'] - 0.1, hand_pose['p']['z']),
-        r=gymapi.Quat(hand_pose['r']['x'], hand_pose['r']['y'], hand_pose['r']['z'], hand_pose['r']['w']),
+        r=initial_rot,
     )
+
+    # policy 模式下，立即同步 attractor 目标，避免初始姿态不一致
+    if policy_mode and 'attractor_handles' in scene_data and len(scene_data['attractor_handles']) > 0:
+        try:
+            gym.set_attractor_target(envs[0], scene_data['attractor_handles'][0], initial_pose)
+        except Exception:
+            pass
     
     motion_plan = planner.MotionPlanner.build_pick_place_plan(
         initial_pose,
@@ -194,6 +237,7 @@ def initialize_systems(gym, sim, scene_data, viewer, output_dir=None):
         'camera_handles': camera_handles,
         'force_sensor_system': force_sensor_system,
         'camera_system': camera_system,
+        'policy_system': policy_system,
         'plan_state': plan_state,
     }
 
@@ -217,7 +261,15 @@ def run_main_loop(gym, sim, viewer, scene_data, systems_data, stop_when_capture_
     camera_handles = systems_data['camera_handles']
     force_sensor_system = systems_data['force_sensor_system']
     camera_system = systems_data['camera_system']
+    policy_system = systems_data.get('policy_system')
     plan_state = systems_data['plan_state']
+
+    policy_mode = str(getattr(Config, 'CONTROL_MODE', 'planner')).lower() == 'policy'
+    policy_shadow = bool(getattr(Config, 'POLICY_SHADOW_MODE', False))
+    policy_fallback = bool(getattr(Config, 'POLICY_FALLBACK_TO_PLANNER', True))
+    policy_enabled = policy_mode and (policy_system is not None)
+    policy_failed = False
+    policy_vertical_down_rot = gymapi.Quat(0.707106, 0.0, 0.0, 0.707106)
     
     # 设置观察角度
     cam_pos = gymapi.Vec3(2.0, 2.0, 2.0)
@@ -232,9 +284,13 @@ def run_main_loop(gym, sim, viewer, scene_data, systems_data, stop_when_capture_
     start_t = gym.get_sim_time(sim)
     last_t = start_t
     last_print_time = 0.0
+    policy_interval = 1.0 / max(float(getattr(Config, 'POLICY_RATE_HZ', 10)), 1e-6)
+    next_policy_time = start_t
     
     print("\nStarting simulation...")
     print(f"Initial panda_hand position: x={body_dict}, y=..., z=...")
+    if policy_enabled:
+        print(f"[PolicyRunner] enabled | shadow={policy_shadow} | rate={1.0/policy_interval:.1f}Hz")
     
     # 主循环
     while not gym.query_viewer_has_closed(viewer):
@@ -289,28 +345,118 @@ def run_main_loop(gym, sim, viewer, scene_data, systems_data, stop_when_capture_
             print(f"cube_down: x={cube_down_pos['x']:.4f}, y={cube_down_pos['y']:.4f}, z={cube_down_pos['z']:.4f}")
             print(f"force sensor: |F|={force_magnitude:.4f} N")
         
-        # 启动动作规划
-        if (not plan_state['running']) and t >= plan_state['start_time']:
-            plan_state['running'] = True
-            plan_state['current_time'] = t
-            plan_state['dt'] = dt
-            plan_state = attractor.update_pick_and_place(
-                gym, viewer, envs, attractor_handles,
-                scene_data['axes_geom'], scene_data['sphere_geom'],
-                plan_state, scene_data['finger_dof_indices'],
-                robot_handles, scene_data['mids'],
-                body_dict=body_dict, hand_name=Config.HAND_NAME
-            )
-        elif plan_state['running']:
-            plan_state['current_time'] = t
-            plan_state['dt'] = dt
-            plan_state = attractor.update_pick_and_place(
-                gym, viewer, envs, attractor_handles,
-                scene_data['axes_geom'], scene_data['sphere_geom'],
-                plan_state, scene_data['finger_dof_indices'],
-                robot_handles, scene_data['mids'],
-                body_dict=body_dict, hand_name=Config.HAND_NAME
-            )
+        # 控制分支：policy（优先）/planner（回退或默认）
+        if policy_enabled and (not policy_failed):
+            if t >= next_policy_time:
+                next_policy_time += policy_interval
+                try:
+                    # 当前夹爪开合度
+                    dof_states = gym.get_actor_dof_states(envs[0], robot_handles[0], gymapi.STATE_POS)
+                    try:
+                        dof_pos = dof_states['pos']
+                    except Exception:
+                        dof_pos = dof_states.pos
+
+                    finger_idxs = scene_data.get('finger_dof_indices', [])
+                    if finger_idxs:
+                        gripper_gap = float(np.mean([dof_pos[i] for i in finger_idxs]))
+                    else:
+                        gripper_gap = float(dof_pos[-1])
+
+                    # 当前状态 qpos = [x, y, z, gripper]
+                    cp = plan_state.get('current_pose') if isinstance(plan_state, dict) else None
+                    if cp is not None:
+                        qpos = np.array([cp.p.x, cp.p.y, cp.p.z, gripper_gap], dtype=np.float32)
+                    else:
+                        qpos = np.array([0.0, 0.0, 0.0, gripper_gap], dtype=np.float32)
+
+                    # 相机观测（仅两路，名称与训练一致）
+                    cam_frames = camera.get_policy_camera_frames(
+                        gym, sim, envs[0], camera_handles,
+                        camera_indices=(0, 1),
+                        camera_names=('realsence1', 'realsence2'),
+                        render_first=True,
+                    )
+
+                    # 触觉观测（6轴 -> 深度应变图）
+                    sensor_reading = force_sensor_data.view(-1, 6)[0]
+                    fx, fy, fz, tx, ty, tz = force_sensor_system.read_and_calibrate(sensor_reading)
+                    gel_vec = np.array([fx, fy, fz, tx, ty, tz], dtype=np.float32)
+                    gel_img = gel_vector_to_depth_strain_image(gel_vec, h=32, w=32)
+
+                    obs = policy_system.build_obs(
+                        qpos=qpos,
+                        camera_frames=cam_frames,
+                        gelsight_image=gel_img,
+                    )
+                    action = policy_system.predict_action(obs, qpos_fallback=qpos)
+
+                    if not np.all(np.isfinite(action)):
+                        raise ValueError(f"policy action contains NaN/Inf: {action}")
+
+                    if policy_shadow:
+                        if t - last_print_time >= Config.PRINT_INTERVAL:
+                            print(f"[PolicyRunner][shadow] action={action}")
+                    else:
+                        # 应用动作：更新吸引子位置 + 夹爪开度
+                        if cp is None:
+                            cp = gymapi.Transform(
+                                p=gymapi.Vec3(action[0], action[1], action[2]),
+                                r=policy_vertical_down_rot,
+                            )
+                        else:
+                            cp.p.x, cp.p.y, cp.p.z = float(action[0]), float(action[1]), float(action[2])
+                            cp.r = policy_vertical_down_rot
+
+                        gym.set_attractor_target(envs[0], attractor_handles[0], cp)
+                        plan_state['current_pose'] = cp
+
+                        # policy 模式下实时刷新吸引子可视化（planner 分支会自动绘制）
+                        gym.clear_lines(viewer)
+                        attractor.create_attractor_visualization(
+                            gym, viewer, envs[0], cp,
+                            scene_data['axes_geom'], scene_data['sphere_geom']
+                        )
+
+                        gripper.command_gripper(
+                            gym, envs, robot_handles,
+                            scene_data['finger_dof_indices'],
+                            float(action[3]),
+                            scene_data['mids'],
+                        )
+
+                except Exception as e:
+                    msg = f"[PolicyRunner] inference failed: {e}"
+                    if policy_fallback:
+                        print(msg + " | fallback to planner")
+                        policy_failed = True
+                    else:
+                        print(msg)
+                        raise
+
+        if (not policy_enabled) or policy_failed:
+            # 启动/执行动作规划（默认逻辑）
+            if (not plan_state['running']) and t >= plan_state['start_time']:
+                plan_state['running'] = True
+                plan_state['current_time'] = t
+                plan_state['dt'] = dt
+                plan_state = attractor.update_pick_and_place(
+                    gym, viewer, envs, attractor_handles,
+                    scene_data['axes_geom'], scene_data['sphere_geom'],
+                    plan_state, scene_data['finger_dof_indices'],
+                    robot_handles, scene_data['mids'],
+                    body_dict=body_dict, hand_name=Config.HAND_NAME
+                )
+            elif plan_state['running']:
+                plan_state['current_time'] = t
+                plan_state['dt'] = dt
+                plan_state = attractor.update_pick_and_place(
+                    gym, viewer, envs, attractor_handles,
+                    scene_data['axes_geom'], scene_data['sphere_geom'],
+                    plan_state, scene_data['finger_dof_indices'],
+                    robot_handles, scene_data['mids'],
+                    body_dict=body_dict, hand_name=Config.HAND_NAME
+                )
         
         # 执行物理模拟
         gym.simulate(sim)
@@ -363,6 +509,42 @@ def run_main_loop(gym, sim, viewer, scene_data, systems_data, stop_when_capture_
                 output_dir=camera_system['output_dir'],
                 capture_count=camera_system['capture_count']
             )
+
+            # ---- 保存动作数据（attractor 位置 + gripper gap） ----
+            attractor_pos = None
+            # 优先使用 plan_state 中的 current_pose（通常为 gymapi.Transform）
+            cp = plan_state.get('current_pose') if isinstance(plan_state, dict) else None
+            if cp is not None:
+                try:
+                    attractor_pos = np.array([cp.p.x, cp.p.y, cp.p.z], dtype=np.float32)
+                except Exception:
+                    attractor_pos = None
+            
+            # 获取夹爪开合度（使用 scene_data['finger_dof_indices'] 优先）
+            gripper_gap = 0.0
+            try:
+                dof_states = gym.get_actor_dof_states(envs[0], robot_handles[0], gymapi.STATE_POS)
+                try:
+                    dof_pos = dof_states['pos']
+                except Exception:
+                    dof_pos = dof_states.pos
+                finger_idxs = scene_data.get('finger_dof_indices', [])
+                if finger_idxs:
+                    gripper_gap = float(np.mean([dof_pos[i] for i in finger_idxs]))
+                else:
+                    gripper_gap = float(dof_pos[-1])
+            except Exception:
+                gripper_gap = 0.0
+
+            action_vector = np.concatenate([attractor_pos, np.array([gripper_gap], dtype=np.float32)])
+
+            # 调用 sensor 中已实现的保存函数
+            try:
+                sensor.save_action_data(camera_system['output_dir'], camera_system['capture_count'], action_vector)
+            except Exception:
+                # 不阻塞主循环，打印调试信息
+                print("Warning: failed to save action data for capture", camera_system['capture_count'])
+            # ---- end 保存 ----
             
             planner.log_capture_progress(camera_system['capture_count'], t)
             camera_system = planner.update_camera_capture_time(camera_system)

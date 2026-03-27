@@ -1,0 +1,17 @@
+LICENSE
+README.md
+setup.py
+detr/__init__.py
+detr/main.py
+detr.egg-info/PKG-INFO
+detr.egg-info/SOURCES.txt
+detr.egg-info/dependency_links.txt
+detr.egg-info/top_level.txt
+detr/models/__init__.py
+detr/models/backbone.py
+detr/models/position_encoding.py
+detr/models/transformer.py
+detr/util/__init__.py
+detr/util/box_ops.py
+detr/util/misc.py
+detr/util/plot_utils.py

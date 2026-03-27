@@ -120,3 +120,14 @@ def save_gel_sensor_data(force_x, force_y, force_z, torque_x, torque_y, torque_z
         f.write(f"Torque (Nm): x={torque_x:.6f}, y={torque_y:.6f}, z={torque_z:.6f}\n")
         f.write(f"Force Magnitude:  {force_magnitude:.6f} N\n")
         f.write(f"Torque Magnitude: {torque_magnitude:.6f} Nm\n")
+
+
+def save_action_data(output_dir, capture_count, action_vector):
+    """
+    保存单帧动作向量到 output_dir/actions/<frame>.npy
+    action_vector: iterable of 4 floats: [ax, ay, az, gripper_gap]
+    """
+    actions_dir = os.path.join(output_dir, "actions")
+    os.makedirs(actions_dir, exist_ok=True)
+    fname = os.path.join(actions_dir, f"{capture_count:04d}.npy")
+    np.save(fname, np.asarray(action_vector, dtype=np.float32))

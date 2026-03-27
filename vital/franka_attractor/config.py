@@ -47,12 +47,12 @@ class SimulationConfig:
     CUBE_RANGE_X = (0.25, 0.60)
     CUBE_RANGE_Y = 0.325
     CUBE_RANGE_Z = (-0.4, 0.4)
-    RANDOM_SEED = 100               # 随机种子（修改后可复现不同结果）
+    RANDOM_SEED = 0               # 随机种子（修改后可复现不同结果）
     ENABLE_RANDOM_CUBE_POS = True  # 是否用随机种子生成初始物块位置
     CUBE_SIZE = 0.05               # 物块边长
     MIN_CUBE_DISTANCE = 0.12       # 两物块最小距离（中心点距离）
     MAX_SAMPLE_TRIES = 1000        # 随机采样最大尝试次数
-    CAPTURE_OUTPUT_DIR = f"/media/neuzz/HLX/zz/camera_outputs_{RANDOM_SEED}"      # 摄像头数据输出目录(临时)
+    CAPTURE_OUTPUT_DIR = f"/media/neuzz/HLX/zz/DataSet/camera_outputs_{RANDOM_SEED}"      # 摄像头数据输出目录(临时)
 
     # ========== 吸引子控制参数 ==========
     ATTRACTOR_STIFFNESS = 5e6      # 增加10倍刚度以提高精度
@@ -131,9 +131,43 @@ class SimulationConfig:
     
     # ========== 摄像头采集参数 ==========
     CAPTURE_FREQUENCY = 10         # 每秒10帧
-    CAPTURE_DURATION = 18.0        # 总共采集17秒
+    CAPTURE_DURATION = 0.0        # 总共采集18秒
     CAPTURE_START_TIME = 1.5       # 采集开始时间
     # CAPTURE_OUTPUT_DIR = "/media/neuzz/HLX/camera_outputs"  # 摄像头数据输出目录
+
+    # ========== 在线策略控制参数 ==========
+    # 控制模式："planner" 使用规则规划器，"policy" 使用模型在线推理
+    CONTROL_MODE = "planner"  # 可切换为 "policy" 进行在线推理控制
+
+    # 在线推理模型文件路径
+    POLICY_CKPT = "./model/policy_best.ckpt"
+    POLICY_ARGS = "./model/args.json"
+    POLICY_STATS = "./model/dataset_stats.pkl"
+
+    # 是否启用影子模式（仅推理不控制，便于联调）
+    POLICY_SHADOW_MODE = False
+
+    # 推理频率（Hz）
+    POLICY_RATE_HZ = 10
+
+    # 策略异常时是否回退到 planner
+    POLICY_FALLBACK_TO_PLANNER = True
+
+    # 安全约束：单步最大位置增量（米）
+    MAX_DELTA_XYZ = 0.01
+
+    # 安全约束：工作空间边界（米）
+    #物块范围x:[0.25,0.60],y:0.325,z:[-0.4,0.4]
+    POLICY_WORKSPACE_X = (0.20, 0.80)
+    POLICY_WORKSPACE_Y = (0.20, 1.20)
+    POLICY_WORKSPACE_Z = (-0.60, 0.60)
+
+    # 安全约束：夹爪开度范围（与动作第4维对应）
+    GRIPPER_ACTION_MIN = 0.0
+    GRIPPER_ACTION_MAX = 0.08
+
+    # 安全约束：输出平滑系数（EMA），0表示不平滑
+    POLICY_ACTION_EMA_ALPHA = 0.0
 
     
     # ========== 传感器校准参数 ==========

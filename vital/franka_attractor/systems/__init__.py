@@ -9,5 +9,6 @@ from . import sensor
 from . import gripper
 from . import attractor
 from . import planner
+from . import policy_runner
 
-__all__ = ['camera', 'sensor', 'gripper', 'attractor', 'planner']
+__all__ = ['camera', 'sensor', 'gripper', 'attractor', 'planner', 'policy_runner']

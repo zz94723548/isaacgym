@@ -1,0 +1,92 @@
+{
+    "eval": false,
+    "checkpoint": "path/to/checkpoint",
+    "onscreen_render": false,
+    "save_dir": "data/data_dir",
+    "name": "retrained_vision_tactile",
+    "policy_class": "ACT",
+    "batch_size": 4,
+    "seed": 0,
+    "num_epochs": 4000,
+    "lr": 1e-05,
+    "kl_weight": 10.0,
+    "start_kl_epoch": 0,
+    "kl_scale_epochs": 0,
+    "chunk_size": 30,
+    "hidden_dim": 512,
+    "dim_feedforward": 3200,
+    "temporal_agg": true,
+    "z_dimension": 32,
+    "gpu": -1,
+    "lr_backbone": 1e-05,
+    "weight_decay": 0.0001,
+    "backbone": "clip_backbone",
+    "dilation": false,
+    "position_embedding": "sine",
+    "enc_layers": 4,
+    "dec_layers": 7,
+    "dropout": 0.025,
+    "nheads": 8,
+    "pre_norm": false,
+    "masks": false,
+    "gelsight_backbone_path": "./data/data_dir/clip_models/2/best_gelsight_encoder.pth",
+    "vision_backbone_path": "./data/data_dir/clip_models/2/best_vision_encoder.pth",
+    "config": "base_config_clip.json",
+    "norm_stats": {
+        "action_mean": [
+            0.4102878272533417,
+            0.5044018626213074,
+            -0.030895493924617767,
+            0.031150076538324356
+        ],
+        "action_std": [
+            0.0716620609164238,
+            0.04487282782793045,
+            0.186876580119133,
+            0.009999999776482582
+        ],
+        "qpos_mean": [
+            0.4102878272533417,
+            0.5044018626213074,
+            -0.030895493924617767,
+            0.031150076538324356
+        ],
+        "qpos_std": [
+            0.0716620609164238,
+            0.04487282782793045,
+            0.186876580119133,
+            0.009999999776482582
+        ],
+        "gelsight_mean": [
+            4.160822868347168,
+            -160.15794372558594,
+            -17.26422691345215
+        ],
+        "gelsight_std": [
+            8.154375076293945,
+            0.2911674678325653,
+            0.2911679446697235
+        ],
+        "delta_mean": [
+            -0.007490179967135191,
+            0.0013570906594395638,
+            0.0015865846071392298,
+            0.031150076538324356
+        ],
+        "delta_std": [
+            0.041964091360569,
+            0.046108320355415344,
+            0.06383465975522995,
+            0.009999999776482582
+        ]
+    },
+    "task_name": "pick_place",
+    "num_episodes": 3,
+    "camera_names": [
+        "realsence1",
+        "realsence2",
+        "gelsight"
+    ],
+    "is_sim": true,
+    "state_dim": 4
+}

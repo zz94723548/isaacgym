@@ -6,6 +6,7 @@
 
 import os
 import math
+import numpy as np
 from isaacgym import gymapi, gymutil
 from config import SimulationConfig as Config
 
@@ -179,6 +180,100 @@ def setup_camera_output_directory(output_dir=None):
     if not os.path.exists(output_dir):
         os.makedirs(output_dir)
     print(f"Camera output directory created at {output_dir}")
+
+
+def get_camera_rgb_image(gym, sim, env, camera_handle, render_first=False,
+                         expected_width=None, expected_height=None):
+    """从相机句柄读取单帧 RGB 图像（内存，不落盘）
+
+    Args:
+        gym: Isaac Gym 对象
+        sim: 模拟环境对象
+        env: 环境对象
+        camera_handle: 摄像头句柄
+        render_first: 是否在读取前先渲染所有相机
+        expected_width: 期望图像宽度（用于一维数组重塑）
+        expected_height: 期望图像高度（用于一维数组重塑）
+
+    Returns:
+        ndarray: uint8, 形状 (H, W, 3)
+    """
+    if render_first:
+        gym.render_all_camera_sensors(sim)
+
+    raw = gym.get_camera_image(sim, env, camera_handle, gymapi.IMAGE_COLOR)
+    img = np.asarray(raw)
+
+    # 常见格式：H x W x 4 (RGBA)
+    if img.ndim == 3:
+        if img.shape[-1] >= 3:
+            rgb = img[..., :3]
+        else:
+            raise ValueError(f"Unexpected camera image shape: {img.shape}")
+    else:
+        # 兜底：使用调用方提供的分辨率进行重塑（旧版 Isaac Gym 无 get_camera_properties）
+        if expected_width is None or expected_height is None:
+            # 默认采用项目主相机分辨率
+            w = int(Config.CAMERAS[0]["width"])
+            h = int(Config.CAMERAS[0]["height"])
+        else:
+            w = int(expected_width)
+            h = int(expected_height)
+        if img.size == h * w * 4:
+            rgb = img.reshape(h, w, 4)[..., :3]
+        elif img.size == h * w * 3:
+            rgb = img.reshape(h, w, 3)
+        else:
+            raise ValueError(f"Cannot reshape camera image: size={img.size}, target=({h},{w},3/4)")
+
+    if rgb.dtype != np.uint8:
+        rgb = np.clip(rgb, 0, 255).astype(np.uint8)
+    return rgb
+
+
+def get_policy_camera_frames(gym, sim, env, camera_handles,
+                             camera_indices=(0, 1),
+                             camera_names=("realsence1", "realsence2"),
+                             render_first=True):
+    """读取在线推理使用的多路相机图像（内存，不落盘）
+
+    Args:
+        gym: Isaac Gym 对象
+        sim: 模拟环境对象
+        env: 环境对象
+        camera_handles: 已创建的相机句柄列表
+        camera_indices: 需要读取的相机索引（默认前两路）
+        camera_names: 输出字典中的键名，需与模型输入名对齐
+        render_first: 是否在读取前统一渲染
+
+    Returns:
+        dict: {camera_name: ndarray(H, W, 3), ...}
+    """
+    if len(camera_indices) != len(camera_names):
+        raise ValueError("camera_indices and camera_names must have the same length")
+
+    if render_first:
+        gym.render_all_camera_sensors(sim)
+
+    frames = {}
+    for idx, name in zip(camera_indices, camera_names):
+        if idx < 0 or idx >= len(camera_handles):
+            raise IndexError(f"camera index out of range: {idx}, total={len(camera_handles)}")
+
+        # 根据索引推断分辨率（前4路固定相机 + 最后一路手眼相机）
+        if idx < len(Config.CAMERAS):
+            exp_w = int(Config.CAMERAS[idx]["width"])
+            exp_h = int(Config.CAMERAS[idx]["height"])
+        else:
+            exp_w = int(getattr(Config, "HAND_CAMERA_WIDTH", 640))
+            exp_h = int(getattr(Config, "HAND_CAMERA_HEIGHT", 480))
+
+        frames[name] = get_camera_rgb_image(
+            gym, sim, env, camera_handles[idx], render_first=False,
+            expected_width=exp_w, expected_height=exp_h,
+        )
+
+    return frames
 
 
 def render_and_save_camera_images(gym, sim, envs, camera_handles,
