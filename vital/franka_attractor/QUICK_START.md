@@ -14,12 +14,11 @@ franka_attractor/
 │
 ├── core/                            # 🏗️ 核心模拟功能
 │   ├── simulation.py                # 环境初始化、物理参数配置
-│   ├── assets.py                    # 加载URDF资产、配置传感器
+│   ├── assets.py                    # 加载URDF资产
 │   └── scene.py                     # 构建场景、创建演员对象
 │
 ├── systems/                         # ⚙️ 功能系统模块
 │   ├── camera.py                    # 摄像头创建、图像保存
-│   ├── sensor.py                    # 力传感器校准、数据保存
 │   ├── gripper.py                   # 夹爪开合控制
 │   ├── attractor.py                 # 吸引子位置更新
 │   └── planner.py                   # 动作规划、采集管理
@@ -63,7 +62,7 @@ VISUALIZE_AXES = False
 
 ### 3. 查看输出数据
 
-运行完毕后，摄像头图像和力传感器数据保存在：
+运行完毕后，摄像头图像保存在：
 
 ```
 camera_outputs/
@@ -71,11 +70,7 @@ camera_outputs/
 ├── camera_1/        # 第二个摄像头的PNG图像
 ├── camera_2/        # 第三个摄像头的PNG图像
 ├── camera_3/        # 第四个摄像头的PNG图像
-├── camera_4/        # 眼在手上摄像头的PNG图像
-└── gel/             # 力传感器数据
-    ├── 0000.npy     # numpy 格式
-    ├── 0000.txt     # 文本格式
-    └── ...
+└── camera_4/        # 眼在手上摄像头的PNG图像
 ```
 
 ## 主要功能说明
@@ -90,11 +85,6 @@ camera_outputs/
 - 1 个眼在手上摄像头 (绑定在夹爪)
 - 分辨率: 640×480 像素
 - 采集频率: 10 Hz (可配置)
-
-### 力传感器
-- 位置: 右指尖 (有实际接触点)
-- 量程: 6 轴 (Fx, Fy, Fz, Tx, Ty, Tz)
-- 校准: 自动零点校准
 
 ### 动作规划
 - 抓取-放置任务
@@ -112,13 +102,12 @@ camera_outputs/
 ### core 模块特点
 
 - **simulation.py**: 环境创建和初始化
-- **assets.py**: 资产加载，支持力传感器配置
+- **assets.py**: 资产加载与基础参数配置
 - **scene.py**: 场景构建，返回清晰的数据字典
 
 ### systems 模块特点
 
 - **camera.py**: 统一的摄像头管理，消除了原代码中的重复
-- **sensor.py**: ForceSensorSystem 类管理传感器生命周期
 - **planner.py**: MotionPlanner 类管理动作规划
 
 ### utils 模块特点
@@ -170,7 +159,6 @@ python main.py --physics_engine=physx   # 使用 PhysX 引擎
 
 ```python
 print(f"Phase: {plan_state['phase_idx']}, Time: {t:.2f}s")
-print(f"Force: {force_magnitude:.4f} N")
 ```
 
 ### 禁用可视化以加速
@@ -214,7 +202,6 @@ Config.CAPTURE_DURATION = 1.0     # 1 秒而不是 17 秒
 ## 性能优化
 
 - 摄像头采集不阻塞物理模拟 (异步)
-- 力传感器数据仅在需要时读取
 - 最小化 GPU/CPU 数据传输
 
 ---

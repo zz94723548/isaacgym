@@ -10,43 +10,43 @@ class SimulationConfig:
     # ========== 物理模拟参数 ==========
     DT = 1.0 / 60.0  # 时间步长：60Hz（0.0167秒）
     SUBSTEPS = 2     # 每帧的物理子步数
-    USE_GPU_PIPELINE = False
+    USE_GPU_PIPELINE = False  # 是否启用GPU物理管线（如果可用）
     
     # Flex引擎参数
-    FLEX_SOLVER_TYPE = 5
-    FLEX_NUM_OUTER_ITERATIONS = 4
-    FLEX_NUM_INNER_ITERATIONS = 15
-    FLEX_RELAXATION = 0.75
-    FLEX_WARM_START = 0.8
+    FLEX_SOLVER_TYPE = 5             # Flex 求解器类型
+    FLEX_NUM_OUTER_ITERATIONS = 4    # Flex 外循环迭代次数
+    FLEX_NUM_INNER_ITERATIONS = 15   # Flex 内循环迭代次数
+    FLEX_RELAXATION = 0.75           # Flex 松弛系数
+    FLEX_WARM_START = 0.8            # Flex 热启动系数
     
     # PhysX引擎参数
-    PHYSX_SOLVER_TYPE = 1
-    PHYSX_NUM_POSITION_ITERATIONS = 4
-    PHYSX_NUM_VELOCITY_ITERATIONS = 1
+    PHYSX_SOLVER_TYPE = 1            # PhysX 求解器类型
+    PHYSX_NUM_POSITION_ITERATIONS = 4  # PhysX 位置迭代次数
+    PHYSX_NUM_VELOCITY_ITERATIONS = 1  # PhysX 速度迭代次数
     
     # ========== 资产路径 ==========
-    ASSET_ROOT = "../urdf"
-    FRANKA_URDF = "franka_description/robots/franka_panda.urdf"
-    WORKBENCH_URDF = "workbench.urdf"
-    CUBE_DOWN_URDF = "cube_down.urdf"
-    CUBE_UP_URDF = "cube_up.urdf"
+    ASSET_ROOT = "../urdf"  # 资产根目录
+    FRANKA_URDF = "franka_description/robots/franka_panda.urdf"  # Franka 机械臂 URDF 路径
+    WORKBENCH_URDF = "workbench.urdf"  # 工作台 URDF 路径
+    CUBE_DOWN_URDF = "cube_down.urdf"  # 下层物块 URDF 路径
+    CUBE_UP_URDF = "cube_up.urdf"  # 上层物块 URDF 路径
     
     # ========== 场景参数 ==========
-    NUM_ENVS = 1
-    SPACING = 1.0
-    HAND_NAME = "panda_hand"
+    NUM_ENVS = 1  # 并行环境数量
+    SPACING = 1.0  # 环境间距
+    HAND_NAME = "panda_hand"  # 末端执行器刚体名称
 
     # ========== 限时关闭参数 ==========
-    TIMEOUT_ENABLED = True       # 是否启用限时关闭
+    TIMEOUT_ENABLED = False       # 是否启用限时关闭
     TIMEOUT_SECONDS = 20.0        # 运行超时（秒）
     
     # 工作台和立方体初始位置(物块范围x:[0.25,0.60],y:0.325,z:[-0.4,0.4])
-    WORKBENCH_POS = (0.8, 0.2, 0.0)
-    CUBE_DOWN_POS = (0.25, 0.325, -0.4)
-    CUBE_UP_POS = (0.6, 0.325, 0.4)
-    CUBE_RANGE_X = (0.25, 0.60)
-    CUBE_RANGE_Y = 0.325
-    CUBE_RANGE_Z = (-0.4, 0.4)
+    WORKBENCH_POS = (0.8, 0.2, 0.0)  # 工作台初始位置
+    CUBE_DOWN_POS = (0.25, 0.325, -0.4)  # 下层物块默认位置
+    CUBE_UP_POS = (0.6, 0.325, 0.4)  # 上层物块默认位置
+    CUBE_RANGE_X = (0.25, 0.60)  # 随机采样 x 范围
+    CUBE_RANGE_Y = 0.325  # 随机采样 y 固定高度
+    CUBE_RANGE_Z = (-0.4, 0.4)  # 随机采样 z 范围
     RANDOM_SEED = 0               # 随机种子（修改后可复现不同结果）
     ENABLE_RANDOM_CUBE_POS = True  # 是否用随机种子生成初始物块位置
     CUBE_SIZE = 0.05               # 物块边长
@@ -64,17 +64,17 @@ class SimulationConfig:
     GRIPPER_MIN_GAP = 0.001        # 最小间隙，避免硬碰撞
     
     # ========== 光照参数 ==========
-    LIGHT_AMBIENT_COLOR = (0.5, 0.5, 0.5)
-    LIGHT_DIRECTION_COLOR = (0.8, 0.8, 0.8)
-    LIGHT_DIRECTION = (0, -1, 0)
+    LIGHT_AMBIENT_COLOR = (0.5, 0.5, 0.5)  # 环境光颜色
+    LIGHT_DIRECTION_COLOR = (0.8, 0.8, 0.8)  # 方向光颜色
+    LIGHT_DIRECTION = (0, -1, 0)  # 方向光方向向量
     
     # ========== 可视化参数 ==========
-    VISUALIZE_AXES = False
-    BASE_AXES_SIZE = 2.0
-    HAND_AXES_SIZE = 0.15
-    FINGERTIP_AXES_SIZE = 0.08
-    CAMERA_AXES_SIZE = 0.1
-    ATTRACTOR_SPHERE_SIZE = 0.03
+    VISUALIZE_AXES = False  # 是否绘制坐标轴可视化
+    BASE_AXES_SIZE = 2.0  # 世界坐标轴长度
+    HAND_AXES_SIZE = 0.15  # 手部坐标轴长度
+    FINGERTIP_AXES_SIZE = 0.08  # 指尖坐标轴长度
+    CAMERA_AXES_SIZE = 0.1  # 相机坐标轴长度
+    ATTRACTOR_SPHERE_SIZE = 0.03  # 吸引子球体可视化半径
     
     # ========== 摄像头配置 ==========
     CAMERAS = [
@@ -121,28 +121,27 @@ class SimulationConfig:
     ]
     
     # 眼在手上摄像头配置
-    HAND_CAMERA_OFFSET = (0.05, 0.0, 0.0)
-    HAND_CAMERA_AXIS_PRIMARY = (1, 0, 0)
-    HAND_CAMERA_ANGLE_PRIMARY = 180
-    HAND_CAMERA_AXIS_SECONDARY = (0, 0, 1)
-    HAND_CAMERA_ANGLE_SECONDARY = 90
-    HAND_CAMERA_WIDTH = 640
-    HAND_CAMERA_HEIGHT = 480
+    HAND_CAMERA_OFFSET = (0.05, 0.0, 0.0)  # 手眼相机相对手坐标偏移
+    HAND_CAMERA_AXIS_PRIMARY = (1, 0, 0)  # 手眼相机主旋转轴
+    HAND_CAMERA_ANGLE_PRIMARY = 180  # 手眼相机主旋转角度
+    HAND_CAMERA_AXIS_SECONDARY = (0, 0, 1)  # 手眼相机次旋转轴
+    HAND_CAMERA_ANGLE_SECONDARY = 90  # 手眼相机次旋转角度
+    HAND_CAMERA_WIDTH = 640  # 手眼相机分辨率宽
+    HAND_CAMERA_HEIGHT = 480  # 手眼相机分辨率高
     
     # ========== 摄像头采集参数 ==========
     CAPTURE_FREQUENCY = 10         # 每秒10帧
-    CAPTURE_DURATION = 0.0        # 总共采集18秒
+    CAPTURE_DURATION = 18.0        # 总共采集18秒
     CAPTURE_START_TIME = 1.5       # 采集开始时间
-    # CAPTURE_OUTPUT_DIR = "/media/neuzz/HLX/camera_outputs"  # 摄像头数据输出目录
 
     # ========== 在线策略控制参数 ==========
     # 控制模式："planner" 使用规则规划器，"policy" 使用模型在线推理
     CONTROL_MODE = "planner"  # 可切换为 "policy" 进行在线推理控制
 
     # 在线推理模型文件路径
-    POLICY_CKPT = "./model/policy_best.ckpt"
-    POLICY_ARGS = "./model/args.json"
-    POLICY_STATS = "./model/dataset_stats.pkl"
+    POLICY_CKPT = "./model/policy_best.ckpt"  # 策略模型权重文件
+    POLICY_ARGS = "./model/args.json"  # 策略模型参数文件
+    POLICY_STATS = "./model/dataset_stats.pkl"  # 训练数据统计量文件
 
     # 是否启用影子模式（仅推理不控制，便于联调）
     POLICY_SHADOW_MODE = False
@@ -169,11 +168,6 @@ class SimulationConfig:
     # 安全约束：输出平滑系数（EMA），0表示不平滑
     POLICY_ACTION_EMA_ALPHA = 0.0
 
-    
-    # ========== 传感器校准参数 ==========
-    SENSOR_CALIBRATION_TIME = 1.0  # 在任务开始前1秒进行校准
-    SENSOR_FINGERTIP_OFFSET_Z = 0.045  # 沿局部Z轴的偏移距离(米)
-    
     # ========== 动作规划参数 ==========
     MOTION_PLAN_HOVER_OFFSET = 0.2      # 悬停在立方体上方20cm
     MOTION_PLAN_GRASP_OFFSET = 0.1      # 抓取时夹爪在立方体上方10cm
@@ -182,21 +176,32 @@ class SimulationConfig:
     # ========== 打印和日志参数 ==========
     PRINT_INTERVAL = 0.2           # 每0.2秒打印一次
     LOG_CAPTURE_INTERVAL = 10      # 每采集10帧打印一次
+    # 触觉绘图开关：False 时不创建 matplotlib 窗口（更省资源）
+    ENABLE_TACTILE_PLOT = False
+    # True: 左右指尖在同一个窗口对比；False: 左右各一个窗口
+    TACTILE_COMBINED_PLOT = False
+    # 触觉数据导出：保存为 converter 兼容的 gel/<frame>.npy (6,)
+    ENABLE_GEL_NPY_EXPORT = True
+    GEL_OUTPUT_SUBDIR = "gel"
+    # gel 向量来源："right" | "left" | "average"
+    GEL_VECTOR_SOURCE = "right"
+    # 是否按真实时间同步渲染；设为 False 可提高离线采样吞吐（会“快进”运行）
+    SYNC_TO_REALTIME = False
     
     # ========== 资产加载选项 ==========
-    ASSET_FIX_BASE_LINK = True
-    ASSET_FLIP_VISUAL = True
-    ASSET_ARMATURE = 0.01
-    ASSET_DENSITY = 100.0
+    ASSET_FIX_BASE_LINK = True  # 是否固定基座链接
+    ASSET_FLIP_VISUAL = True  # 是否翻转可视网格
+    ASSET_ARMATURE = 0.01  # 资产等效转动惯量系数
+    ASSET_DENSITY = 100.0  # 资产默认密度
     
     # ========== 接触属性 ==========
-    CONTACT_FRICTION = 2.0
-    CONTACT_RESTITUTION = 0.0
-    CONTACT_OFFSET = 0.03
-    REST_OFFSET = 0.0
+    CONTACT_FRICTION = 2.0  # 接触摩擦系数
+    CONTACT_RESTITUTION = 0.0  # 接触恢复系数（弹性）
+    CONTACT_OFFSET = 0.001  # 接触偏移
+    REST_OFFSET = 0.0  # 静止偏移
     
     # ========== 关节控制参数 ==========
     DOF_STIFFNESS = 10.0           # 降低以让attractor主导控制
     DOF_DAMPING = 10.0             # 降低以减少阻尼干扰
-    GRIPPER_STIFFNESS = 1e10
-    GRIPPER_DAMPING = 1.0
+    GRIPPER_STIFFNESS = 1e10  # 夹爪刚度
+    GRIPPER_DAMPING = 1.0  # 夹爪阻尼

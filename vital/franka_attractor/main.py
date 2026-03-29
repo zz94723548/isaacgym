@@ -9,15 +9,14 @@ Franka 吸引子示例 - 主程序
     python main.py
 """
 
-import math
 import numpy as np
-from isaacgym import gymapi, gymutil, gymtorch
+from isaacgym import gymapi, gymutil
 
 # 导入配置和各个模块
 from config import SimulationConfig as Config
 from core import simulation, assets, scene
-from systems import camera, sensor, gripper, attractor, planner, policy_runner
-from utils import math_utils, visualization, io_utils
+from systems import camera, gripper, attractor, planner, policy_runner, tactile
+from utils import visualization, io_utils
 
 
 def apply_random_cube_positions():
@@ -46,23 +45,27 @@ def apply_random_cube_positions():
     Config.CUBE_UP_POS = (cube_up_x, y, cube_up_z)
 
 
-def gel_vector_to_depth_strain_image(gel_vec, h=32, w=32, scale=1e4):
-    """将 6 轴触觉向量映射为在线推理使用的应变图 (H, W, 3)。"""
-    v = np.asarray(gel_vec, dtype=np.float64) * scale
-    if v.shape[0] != 6:
-        raise ValueError(f"gel 向量维度应为 6，实际为 {v.shape[0]}")
-    fx, fy, fz, tx, ty, tz = v
+def refine_motion_plan_for_stability(plan, pre_close_stabilize=0.4, post_grasp_stabilize=1.0):
+    """对抓放计划做最小稳定性增强（夹爪相关）。"""
+    if not plan:
+        return plan
 
-    cy, cx = (h - 1) / 2.0, (w - 1) / 2.0
-    ys, xs = np.mgrid[0:h, 0:w].astype(np.float64)
-    dy = (ys - cy) / (h / 2.0)
-    dx = (xs - cx) / (w / 2.0)
+    refined = []
+    for phase in plan:
+        if phase.get("name") == "close_gripper":
+            pre = dict(phase)
+            pre["name"] = "stabilize_before_close"
+            pre["duration"] = float(pre_close_stabilize)
+            pre["goal_finger_width"] = pre["start_finger_width"]
+            refined.append(pre)
 
-    normal_strain = fz + tx * dy - ty * dx
-    x_strain = fx + tz * dy
-    y_strain = fy - tz * dx
+        p = dict(phase)
+        if p.get("name") == "stabilize_after_grasp":
+            p["duration"] = float(max(post_grasp_stabilize, p.get("duration", 0.0)))
 
-    return np.stack([normal_strain, x_strain, y_strain], axis=-1).astype(np.float32)
+        refined.append(p)
+
+    return refined
 
 
 def setup_scene(gym, sim, viewer):
@@ -137,7 +140,6 @@ def initialize_systems(gym, sim, scene_data, viewer, output_dir=None):
     if output_dir is None:
         output_dir = Config.CAPTURE_OUTPUT_DIR
     camera.setup_camera_output_directory(output_dir)
-    sensor.setup_gel_output_directory(f"{output_dir}/gel")
     
     camera_handles = []
     for cam_config in Config.CAMERAS:
@@ -168,9 +170,6 @@ def initialize_systems(gym, sim, scene_data, viewer, output_dir=None):
         rotation_angle_secondary=Config.HAND_CAMERA_ANGLE_SECONDARY,
     )
     camera_handles.append(hand_cam_handle)
-    
-    # 初始化传感器系统
-    force_sensor_system = sensor.ForceSensorSystem()
     
     # 初始化摄像头系统
     camera_system = planner.initialize_camera_system(
@@ -221,6 +220,11 @@ def initialize_systems(gym, sim, scene_data, viewer, output_dir=None):
         grasp_offset=Config.MOTION_PLAN_GRASP_OFFSET,
         release_offset=Config.MOTION_PLAN_RELEASE_OFFSET
     )
+    motion_plan = refine_motion_plan_for_stability(
+        motion_plan,
+        pre_close_stabilize=float(getattr(Config, "PRE_CLOSE_STABILIZE_SEC", 0.4)),
+        post_grasp_stabilize=float(getattr(Config, "POST_GRASP_STABILIZE_SEC", 1.0)),
+    )
     
     plan_state = {
         'plan': motion_plan,
@@ -233,12 +237,36 @@ def initialize_systems(gym, sim, scene_data, viewer, output_dir=None):
         'start_time': Config.CAPTURE_START_TIME,
     }
     
+    # 初始化触觉可视化窗口（由配置控制：单窗口对比 or 双窗口分开）。
+    tactile_plot_enabled = bool(getattr(Config, "ENABLE_TACTILE_PLOT", True))
+    tactile_combined_plot = bool(getattr(Config, "TACTILE_COMBINED_PLOT", True))
+    right_wrench_plot = None
+    left_wrench_plot = None
+    combined_wrench_plot = None
+    if tactile_plot_enabled:
+        if tactile_combined_plot:
+            combined_wrench_plot = tactile.init_dual_wrench_plot_window(
+                title="Finger-Cube Tactile Compare 6D wrench",
+                max_points=600,
+            )
+        else:
+            right_wrench_plot = tactile.init_wrench_plot_window(title="Right Finger-Cube Tactile 6D wrench", max_points=600)
+            left_wrench_plot = tactile.init_wrench_plot_window(title="Left Finger-Cube Tactile 6D wrench", max_points=600)
+    right_log_file, _ = tactile.init_wrench_logger(camera_system['output_dir'], filename="right_tactile_wrench.csv")
+    left_log_file, _ = tactile.init_wrench_logger(camera_system['output_dir'], filename="left_tactile_wrench.csv")
+    
     return {
         'camera_handles': camera_handles,
-        'force_sensor_system': force_sensor_system,
         'camera_system': camera_system,
         'policy_system': policy_system,
         'plan_state': plan_state,
+        'right_wrench_plot': right_wrench_plot,
+        'left_wrench_plot': left_wrench_plot,
+        'combined_wrench_plot': combined_wrench_plot,
+        'tactile_plot_enabled': tactile_plot_enabled,
+        'tactile_combined_plot': tactile_combined_plot,
+        'right_log_file': right_log_file,
+        'left_log_file': left_log_file,
     }
 
 
@@ -259,10 +287,46 @@ def run_main_loop(gym, sim, viewer, scene_data, systems_data, stop_when_capture_
     body_dict = scene_data['body_dict']
     
     camera_handles = systems_data['camera_handles']
-    force_sensor_system = systems_data['force_sensor_system']
     camera_system = systems_data['camera_system']
     policy_system = systems_data.get('policy_system')
     plan_state = systems_data['plan_state']
+    right_wrench_plot = systems_data.get('right_wrench_plot')
+    left_wrench_plot = systems_data.get('left_wrench_plot')
+    combined_wrench_plot = systems_data.get('combined_wrench_plot')
+    tactile_plot_enabled = bool(systems_data.get('tactile_plot_enabled', True))
+    tactile_combined_plot = bool(systems_data.get('tactile_combined_plot', True))
+    right_log_file = systems_data.get('right_log_file')
+    left_log_file = systems_data.get('left_log_file')
+
+    # 初始化触觉传感器数据
+    cube_up_handle = scene_data['cube_handles'][1]
+    right_finger_body_sim_idx = gym.find_actor_rigid_body_index(
+        envs[0], robot_handles[0], "panda_rightfinger", gymapi.DOMAIN_SIM
+    )
+    left_finger_body_sim_idx = gym.find_actor_rigid_body_index(
+        envs[0], robot_handles[0], "panda_leftfinger", gymapi.DOMAIN_SIM
+    )
+    cube_up_body_sim_idx = gym.get_actor_rigid_body_index(
+        envs[0], cube_up_handle, 0, gymapi.DOMAIN_SIM
+    )
+    # 几何体缓存：避免每帧构建 WireframeSphereGeometry，减少 Python 侧开销。
+    sensor_axes_geom = gymutil.AxesGeometry(0.025)
+    right_marker_geom = gymutil.WireframeSphereGeometry(0.008, 10, 10, color=(1.0, 0.0, 1.0))
+    left_marker_geom = gymutil.WireframeSphereGeometry(0.008, 10, 10, color=(0.0, 1.0, 1.0))
+    tactile_enabled = bool(getattr(Config, "ENABLE_TACTILE_SENSOR", True))
+    sync_to_realtime = bool(getattr(Config, "SYNC_TO_REALTIME", True))
+    gel_export_enabled = bool(getattr(Config, "ENABLE_GEL_NPY_EXPORT", True))
+    gel_output_subdir = str(getattr(Config, "GEL_OUTPUT_SUBDIR", "gel"))
+    gel_vector_source = str(getattr(Config, "GEL_VECTOR_SOURCE", "right")).lower()
+    # 运行期缓存：避免使用 locals() 进行变量存在判断，可读性和性能都更好。
+    rf_world = rt_world = lf_world = lt_world = None
+    right_pos = left_pos = None
+    
+    if tactile_enabled:
+        print(
+            f"[TactileContact] tracking pair body indices (sim-domain): "
+            f"right_finger={right_finger_body_sim_idx}, left_finger={left_finger_body_sim_idx}, cube_up={cube_up_body_sim_idx}"
+        )
 
     policy_mode = str(getattr(Config, 'CONTROL_MODE', 'planner')).lower() == 'policy'
     policy_shadow = bool(getattr(Config, 'POLICY_SHADOW_MODE', False))
@@ -276,14 +340,11 @@ def run_main_loop(gym, sim, viewer, scene_data, systems_data, stop_when_capture_
     cam_target = gymapi.Vec3(0.5, 0.3, 0.0)
     gym.viewer_camera_look_at(viewer, None, cam_pos, cam_target)
     
-    # 获取力传感器张量
-    gym.prepare_sim(sim)
-    sensor_tensor = gym.acquire_force_sensor_tensor(sim)
-    force_sensor_data = gymtorch.wrap_tensor(sensor_tensor)
-    
     start_t = gym.get_sim_time(sim)
     last_t = start_t
-    last_print_time = 0.0
+    last_pose_print_time = 0.0
+    last_tactile_print_time = 0.0
+    last_policy_print_time = 0.0
     policy_interval = 1.0 / max(float(getattr(Config, 'POLICY_RATE_HZ', 10)), 1e-6)
     next_policy_time = start_t
     
@@ -303,32 +364,16 @@ def run_main_loop(gym, sim, viewer, scene_data, systems_data, stop_when_capture_
             print(f"\nTimeout reached: {Config.TIMEOUT_SECONDS:.1f}s. Exiting simulation loop.")
             break
         
-        # 刷新力传感器数据
-        gym.refresh_force_sensor_tensor(sim)
-        
-        # 传感器校准（仅执行一次）
-        if not force_sensor_system.calibration_done and \
-           t >= (Config.CAPTURE_START_TIME - Config.SENSOR_CALIBRATION_TIME):
-            sensor_reading_initial = force_sensor_data.view(-1, 6)[0]
-            force_sensor_system.calibrate(sensor_reading_initial)
-            print(f"\n[t={t:.2f}s] 传感器零点校准完成")
-        
         # 实时打印位置信息
-        if body_dict and t - last_print_time >= Config.PRINT_INTERVAL:
-            last_print_time = t
+        if body_dict and t - last_pose_print_time >= Config.PRINT_INTERVAL:
+            last_pose_print_time = t
             robot_props = gym.get_actor_rigid_body_states(envs[0], robot_handles[0], gymapi.STATE_POS)
-            cube_up_props = gym.get_actor_rigid_body_states(envs[0], scene_data['cube_handles'][0], gymapi.STATE_POS)
-            cube_down_props = gym.get_actor_rigid_body_states(envs[0], scene_data['cube_handles'][1], gymapi.STATE_POS)
+            # scene.build_scene 中 cube_handles 顺序为 [cube_down, cube_up]
+            cube_down_props = gym.get_actor_rigid_body_states(envs[0], scene_data['cube_handles'][0], gymapi.STATE_POS)
+            cube_up_props = gym.get_actor_rigid_body_states(envs[0], scene_data['cube_handles'][1], gymapi.STATE_POS)
             
             hand_idx = body_dict[Config.HAND_NAME]
             panda_hand_pose_data = robot_props['pose'][:][hand_idx]
-            
-            # 获取传感器数据
-            sensor_idx = 0
-            sensor_reading = force_sensor_data.view(-1, 6)[sensor_idx]
-            force_x, force_y, force_z, torque_x, torque_y, torque_z = \
-                force_sensor_system.read_and_calibrate(sensor_reading)
-            force_magnitude = force_sensor_system.get_force_magnitude(force_x, force_y, force_z)
             
             cube_up_pos = cube_up_props['pose'][:][0]['p']
             cube_down_pos = cube_down_props['pose'][:][0]['p']
@@ -343,7 +388,6 @@ def run_main_loop(gym, sim, viewer, scene_data, systems_data, stop_when_capture_
                   f"z={panda_hand_pose_data['p']['z']:.4f}")
             print(f"cube_up:   x={cube_up_pos['x']:.4f}, y={cube_up_pos['y']:.4f}, z={cube_up_pos['z']:.4f}")
             print(f"cube_down: x={cube_down_pos['x']:.4f}, y={cube_down_pos['y']:.4f}, z={cube_down_pos['z']:.4f}")
-            print(f"force sensor: |F|={force_magnitude:.4f} N")
         
         # 控制分支：policy（优先）/planner（回退或默认）
         if policy_enabled and (not policy_failed):
@@ -378,16 +422,9 @@ def run_main_loop(gym, sim, viewer, scene_data, systems_data, stop_when_capture_
                         render_first=True,
                     )
 
-                    # 触觉观测（6轴 -> 深度应变图）
-                    sensor_reading = force_sensor_data.view(-1, 6)[0]
-                    fx, fy, fz, tx, ty, tz = force_sensor_system.read_and_calibrate(sensor_reading)
-                    gel_vec = np.array([fx, fy, fz, tx, ty, tz], dtype=np.float32)
-                    gel_img = gel_vector_to_depth_strain_image(gel_vec, h=32, w=32)
-
                     obs = policy_system.build_obs(
                         qpos=qpos,
                         camera_frames=cam_frames,
-                        gelsight_image=gel_img,
                     )
                     action = policy_system.predict_action(obs, qpos_fallback=qpos)
 
@@ -395,7 +432,8 @@ def run_main_loop(gym, sim, viewer, scene_data, systems_data, stop_when_capture_
                         raise ValueError(f"policy action contains NaN/Inf: {action}")
 
                     if policy_shadow:
-                        if t - last_print_time >= Config.PRINT_INTERVAL:
+                        if t - last_policy_print_time >= Config.PRINT_INTERVAL:
+                            last_policy_print_time = t
                             print(f"[PolicyRunner][shadow] action={action}")
                     else:
                         # 应用动作：更新吸引子位置 + 夹爪开度
@@ -462,17 +500,76 @@ def run_main_loop(gym, sim, viewer, scene_data, systems_data, stop_when_capture_
         gym.simulate(sim)
         gym.fetch_results(sim, True)
         
+        # ========== 触觉传感器：计算指尖-物块接触力 ==========
+        if tactile_enabled and right_log_file is not None and left_log_file is not None:
+            robot_props = gym.get_actor_rigid_body_states(envs[0], robot_handles[0], gymapi.STATE_POS)
+            contacts = gym.get_env_rigid_contacts(envs[0])
+
+            right_idx = body_dict['panda_rightfinger']
+            right_pose = robot_props['pose'][:][right_idx]
+            right_pos = np.array([right_pose['p']['x'], right_pose['p']['y'], right_pose['p']['z']], dtype=np.float32)
+            right_rot = gymapi.Quat(right_pose['r']['x'], right_pose['r']['y'], right_pose['r']['z'], right_pose['r']['w'])
+
+            left_idx = body_dict['panda_leftfinger']
+            left_pose = robot_props['pose'][:][left_idx]
+            left_pos = np.array([left_pose['p']['x'], left_pose['p']['y'], left_pose['p']['z']], dtype=np.float32)
+            left_rot = gymapi.Quat(left_pose['r']['x'], left_pose['r']['y'], left_pose['r']['z'], left_pose['r']['w'])
+
+            rf_world, rt_world, r_pair_count = tactile.compute_body_pair_contact_wrench_from_contacts(
+                contacts,
+                right_finger_body_sim_idx,
+                cube_up_body_sim_idx,
+                right_pos,
+                right_rot,
+                right_pos,
+            )
+
+            lf_world, lt_world, l_pair_count = tactile.compute_body_pair_contact_wrench_from_contacts(
+                contacts,
+                left_finger_body_sim_idx,
+                cube_up_body_sim_idx,
+                left_pos,
+                left_rot,
+                left_pos,
+            )
+
+            if t - last_tactile_print_time >= Config.PRINT_INTERVAL:
+                last_tactile_print_time = t
+                rf_mag = float(np.linalg.norm(rf_world))
+                rt_mag = float(np.linalg.norm(rt_world))
+                lf_mag = float(np.linalg.norm(lf_world))
+                lt_mag = float(np.linalg.norm(lt_world))
+                print(
+                    f"[t={t:.2f}s] right finger<->cube "
+                    f"F=({rf_world[0]:.4f}, {rf_world[1]:.4f}, {rf_world[2]:.4f})N |F|={rf_mag:.4f}N "
+                    f"T=({rt_world[0]:.4f}, {rt_world[1]:.4f}, {rt_world[2]:.4f})Nm |T|={rt_mag:.4f}Nm "
+                    f"contacts={r_pair_count}"
+                )
+                print(
+                    f"[t={t:.2f}s] left  finger<->cube "
+                    f"F=({lf_world[0]:.4f}, {lf_world[1]:.4f}, {lf_world[2]:.4f})N |F|={lf_mag:.4f}N "
+                    f"T=({lt_world[0]:.4f}, {lt_world[1]:.4f}, {lt_world[2]:.4f})Nm |T|={lt_mag:.4f}Nm "
+                    f"contacts={l_pair_count}"
+                )
+                if tactile_plot_enabled:
+                    if tactile_combined_plot:
+                        tactile.update_dual_wrench_plot_window(
+                            combined_wrench_plot,
+                            t,
+                            rf_world,
+                            rt_world,
+                            lf_world,
+                            lt_world,
+                            draw_period=0.05,
+                        )
+                    else:
+                        tactile.update_wrench_plot_window(right_wrench_plot, t, rf_world, rt_world, draw_period=0.05)
+                        tactile.update_wrench_plot_window(left_wrench_plot, t, lf_world, lt_world, draw_period=0.05)
+        # ========== 触觉传感器结束 ==========
+        
         # 可视化
         if Config.VISUALIZE_AXES:
             visualization.draw_base_coordinate_frame(gym, viewer, envs[0])
-            
-            robot_props = gym.get_actor_rigid_body_states(envs[0], robot_handles[0], gymapi.STATE_POS)
-            left_finger_idx = body_dict['panda_leftfinger']
-            right_finger_idx = body_dict['panda_rightfinger']
-            left_finger = robot_props['pose'][:][left_finger_idx]
-            right_finger = robot_props['pose'][:][right_finger_idx]
-            
-            visualization.draw_fingertip_markers(gym, viewer, envs[0], left_finger, right_finger)
             
             # 绘制摄像头坐标系
             for cam_config in Config.CAMERAS:
@@ -485,24 +582,32 @@ def run_main_loop(gym, sim, viewer, scene_data, systems_data, stop_when_capture_
                     cam_config.get("rotation_angle2", 0),
                 )
         
+        # 触觉力向量可视化
+        if tactile_enabled and rf_world is not None and rt_world is not None and lf_world is not None and lt_world is not None:
+            tactile.draw_sensor_wrench(
+                gym, viewer, envs[0],
+                right_pos, rf_world, rt_world,
+                sensor_axes_geom=sensor_axes_geom,
+                sensor_marker_geom=right_marker_geom,
+                marker_color=(1.0, 0.0, 1.0),
+            )
+            tactile.draw_sensor_wrench(
+                gym, viewer, envs[0],
+                left_pos, lf_world, lt_world,
+                sensor_axes_geom=sensor_axes_geom,
+                sensor_marker_geom=left_marker_geom,
+                marker_color=(0.0, 1.0, 1.0),
+            )
+        
         # 更新图形
         gym.step_graphics(sim)
         gym.draw_viewer(viewer, sim, False)
-        gym.sync_frame_time(sim)
+        # 允许通过配置关闭实时同步，以获得更高离线采样帧率。
+        if sync_to_realtime:
+            gym.sync_frame_time(sim)
         
         # 摄像头拍摄逻辑
         if planner.should_capture_frame(t, camera_system):
-            sensor_reading = force_sensor_data.view(-1, 6)[0]
-            force_x, force_y, force_z, torque_x, torque_y, torque_z = \
-                force_sensor_system.read_and_calibrate(sensor_reading)
-            
-            # 保存传感器数据
-            sensor.save_gel_sensor_data(
-                force_x, force_y, force_z, torque_x, torque_y, torque_z,
-                output_dir=f"{camera_system['output_dir']}/gel",
-                capture_count=camera_system['capture_count']
-            )
-            
             # 保存摄像头图像
             camera.render_and_save_camera_images(
                 gym, sim, envs, camera_handles,
@@ -538,13 +643,37 @@ def run_main_loop(gym, sim, viewer, scene_data, systems_data, stop_when_capture_
 
             action_vector = np.concatenate([attractor_pos, np.array([gripper_gap], dtype=np.float32)])
 
-            # 调用 sensor 中已实现的保存函数
+            # 保存动作向量
             try:
-                sensor.save_action_data(camera_system['output_dir'], camera_system['capture_count'], action_vector)
+                io_utils.save_action_data(camera_system['output_dir'], camera_system['capture_count'], action_vector)
             except Exception:
                 # 不阻塞主循环，打印调试信息
                 print("Warning: failed to save action data for capture", camera_system['capture_count'])
             # ---- end 保存 ----
+
+            # 触觉数据与相机截图对齐：仅在 capture 时刻写入，并使用同一 capture_count。
+            if tactile_enabled and right_log_file is not None and left_log_file is not None and rf_world is not None and lf_world is not None:
+                tactile.append_wrench_log(right_log_file, t, rf_world, rt_world)
+                tactile.append_wrench_log(left_log_file, t, lf_world, lt_world)
+                right_log_file.flush()
+                left_log_file.flush()
+
+                # 导出 converter 兼容格式：gel/<frame>.npy，形状 (6,)
+                if gel_export_enabled:
+                    if gel_vector_source == "left":
+                        gel_vec = np.concatenate([lf_world, lt_world], axis=0)
+                    elif gel_vector_source == "average":
+                        gel_vec = np.concatenate([(rf_world + lf_world) * 0.5, (rt_world + lt_world) * 0.5], axis=0)
+                    else:
+                        # 默认 right：与现有 right_tactile_wrench.csv 语义一致
+                        gel_vec = np.concatenate([rf_world, rt_world], axis=0)
+
+                    io_utils.save_gel_data(
+                        camera_system['output_dir'],
+                        camera_system['capture_count'],
+                        gel_vec,
+                        subdir=gel_output_subdir,
+                    )
             
             planner.log_capture_progress(camera_system['capture_count'], t)
             camera_system = planner.update_camera_capture_time(camera_system)
@@ -557,6 +686,18 @@ def run_main_loop(gym, sim, viewer, scene_data, systems_data, stop_when_capture_
 
 def main():
     """主程序入口"""
+    # 夹爪闭合宽度对齐物块边长（减小过挤压导致的抓取偏移）
+    desired_closed = float(getattr(Config, "GRIPPER_CLOSED_NEAR_CUBE", Config.CUBE_SIZE - 0.001))
+    desired_closed = min(desired_closed, float(getattr(Config, "GRIPPER_FINGER_OPEN", 0.08)))
+    desired_closed = max(desired_closed, float(getattr(Config, "GRIPPER_MIN_GAP", 0.001)) * 2.0)
+    Config.GRIPPER_FINGER_CLOSED = desired_closed
+    print(f"[GripperTune] GRIPPER_FINGER_CLOSED={Config.GRIPPER_FINGER_CLOSED:.4f}")
+    
+    # 启用触觉传感器
+    if not hasattr(Config, "ENABLE_TACTILE_SENSOR"):
+        Config.ENABLE_TACTILE_SENSOR = True
+    print(f"[TactileSensor] ENABLE_TACTILE_SENSOR={Config.ENABLE_TACTILE_SENSOR}")
+
     # 初始化 Isaac Gym
     gym = gymapi.acquire_gym()
     
@@ -577,7 +718,25 @@ def main():
         run_main_loop(gym, sim, viewer, scene_data, systems_data)
         
     finally:
-        # 清理资源
+        # 清理触觉传感器资源
+        try:
+            if 'right_log_file' in systems_data and systems_data['right_log_file'] is not None:
+                systems_data['right_log_file'].flush()
+                systems_data['right_log_file'].close()
+            if 'left_log_file' in systems_data and systems_data['left_log_file'] is not None:
+                systems_data['left_log_file'].flush()
+                systems_data['left_log_file'].close()
+        except Exception:
+            pass
+        
+        # 清理 matplotlib
+        try:
+            tactile.plt.ioff()
+            tactile.plt.close('all')
+        except Exception:
+            pass
+        
+        # 清理 Isaac Gym 资源
         gym.destroy_viewer(viewer)
         gym.destroy_sim(sim)
         print("Cleanup completed.")

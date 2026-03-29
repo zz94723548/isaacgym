@@ -283,7 +283,7 @@ class PolicyRunner:
         camera_frames : dict
             e.g. {'realsence1': HxWx3, 'realsence2': HxWx3}
         gelsight_image : ndarray
-            触觉图像 (H, W, 3)
+            辅助图像 (H, W, 3)
         """
         qpos = _to_numpy(qpos).reshape(-1)
         qpos_n = self._normalize_qpos(qpos)

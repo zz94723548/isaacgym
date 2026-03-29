@@ -5,10 +5,10 @@
 """
 
 from . import camera
-from . import sensor
 from . import gripper
 from . import attractor
 from . import planner
 from . import policy_runner
+from . import tactile
 
-__all__ = ['camera', 'sensor', 'gripper', 'attractor', 'planner', 'policy_runner']
+__all__ = ['camera', 'gripper', 'attractor', 'planner', 'policy_runner', 'tactile']

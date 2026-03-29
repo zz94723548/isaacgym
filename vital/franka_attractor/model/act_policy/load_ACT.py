@@ -10,7 +10,7 @@ def load_ACT(model_path, args_file:str = None, override_args:dict = None) -> ACT
     model_path: str, path to the model checkpoint file.
     args_file: str, path to the args.json file. If None, it will look for the args.json file in the same directory as the model_path.
     """
-    # 中文注释：加载ACT模型，包括预训练的视觉和触觉骨干网络（如果有的话），并根据提供的参数文件进行配置。
+    # 中文注释：加载ACT模型，并根据提供的参数文件进行配置。
     
     if args_file is None:
         args_file = os.path.join(os.path.dirname(model_path), 'args.json')

@@ -5,6 +5,7 @@ I/O 工具函数
 """
 
 import os
+import numpy as np
 
 
 def ensure_directory_exists(directory_path):
@@ -51,3 +52,25 @@ def create_nested_directory(base_path, *subdirs):
     
     ensure_directory_exists(path)
     return path
+
+
+def save_action_data(output_dir, capture_count, action_vector):
+    """
+    保存单帧动作向量到 output_dir/actions/<frame>.npy
+    action_vector: iterable of 4 floats: [ax, ay, az, gripper_gap]
+    """
+    actions_dir = os.path.join(output_dir, "actions")
+    os.makedirs(actions_dir, exist_ok=True)
+    fname = os.path.join(actions_dir, f"{capture_count:04d}.npy")
+    np.save(fname, np.asarray(action_vector, dtype=np.float32))
+
+
+def save_gel_data(output_dir, capture_count, gel_vector, subdir="gel"):
+    """
+    保存单帧触觉向量到 output_dir/<subdir>/<frame>.npy
+    gel_vector: iterable of 6 floats: [Fx, Fy, Fz, Tx, Ty, Tz]
+    """
+    gel_dir = os.path.join(output_dir, subdir)
+    os.makedirs(gel_dir, exist_ok=True)
+    fname = os.path.join(gel_dir, f"{capture_count:04d}.npy")
+    np.save(fname, np.asarray(gel_vector, dtype=np.float32))

@@ -96,14 +96,20 @@ def draw_fingertip_markers(gym, viewer, env, left_finger_pose, right_finger_pose
     if not Config.VISUALIZE_AXES:
         return
     
-    from utils.math_utils import compute_fingertip_position
-    
     sphere_rot = gymapi.Quat.from_euler_zyx(0.5 * math.pi, 0, 0)
     sphere_pose = gymapi.Transform(r=sphere_rot)
     
-    # 计算真实指尖位置
-    left_true_tip = compute_fingertip_position(left_finger_pose, Config.SENSOR_FINGERTIP_OFFSET_Z)
-    right_true_tip = compute_fingertip_position(right_finger_pose, Config.SENSOR_FINGERTIP_OFFSET_Z)
+    # 使用左右手指刚体原点作为可视化标记位置
+    left_true_tip = (
+        left_finger_pose['p']['x'],
+        left_finger_pose['p']['y'],
+        left_finger_pose['p']['z'],
+    )
+    right_true_tip = (
+        right_finger_pose['p']['x'],
+        right_finger_pose['p']['y'],
+        right_finger_pose['p']['z'],
+    )
     
     # 绘制坐标系
     true_tip_axes_geom = gymutil.AxesGeometry(Config.FINGERTIP_AXES_SIZE)

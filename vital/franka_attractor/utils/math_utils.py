@@ -63,13 +63,14 @@ def slerp_quat(q1, q2, alpha):
     return result
 
 
-def compute_fingertip_position(finger_pose, offset_z=0.045):
+def compute_fingertip_position(finger_pose, offset_y=0.0, offset_z=0.045):
     """计算指尖真实位置
     
     从指尖刚体原点沿其局部Z轴正方向偏移，得到真正的指尖位置
     
     Args:
         finger_pose: 刚体姿态字典，包含'p'(位置)和'r'(四元数旋转)
+        offset_y: 沿局部Y轴的偏移距离(米)
         offset_z: 沿局部Z轴的偏移距离(米)
         
     Returns:
@@ -82,14 +83,18 @@ def compute_fingertip_position(finger_pose, offset_z=0.045):
     # 提取四元数分量
     x, y, z, w = quat['x'], quat['y'], quat['z'], quat['w']
     
-    # 计算旋转矩阵的第三列（局部Z轴方向）
+    # 计算旋转矩阵的第二列（局部Y轴方向）和第三列（局部Z轴方向）
+    y_axis_x = 2 * (x * y - w * z)
+    y_axis_y = 1 - 2 * (x * x + z * z)
+    y_axis_z = 2 * (y * z + w * x)
+
     z_axis_x = 2 * (x * z + w * y)
     z_axis_y = 2 * (y * z - w * x)
     z_axis_z = 1 - 2 * (x * x + y * y)
     
-    # 沿局部Z轴偏移
-    true_tip_x = pos['x'] + offset_z * z_axis_x
-    true_tip_y = pos['y'] + offset_z * z_axis_y
-    true_tip_z = pos['z'] + offset_z * z_axis_z
+    # 沿局部Y轴和Z轴偏移
+    true_tip_x = pos['x'] + offset_y * y_axis_x + offset_z * z_axis_x
+    true_tip_y = pos['y'] + offset_y * y_axis_y + offset_z * z_axis_y
+    true_tip_z = pos['z'] + offset_y * y_axis_z + offset_z * z_axis_z
     
     return (true_tip_x, true_tip_y, true_tip_z)

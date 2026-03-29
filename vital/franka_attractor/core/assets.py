@@ -52,24 +52,6 @@ def load_robot_asset(gym, sim, asset_root, asset_file):
         print(f"*** Failed to load asset: {asset_file}")
         quit()
     
-    # 获取右指尖刚体索引
-    right_finger_body_idx = gym.find_asset_rigid_body_index(robot_asset, "panda_rightfinger")
-    
-    # 创建触觉传感器属性
-    sensor_props = gymapi.ForceSensorProperties()
-    sensor_props.enable_forward_dynamics_forces = True
-    sensor_props.enable_constraint_solver_forces = True
-    sensor_props.use_world_frame = False
-    
-    # 在右指尖刚体上创建力传感器
-    sensor_pose = gymapi.Transform()
-    sensor_pose.p = gymapi.Vec3(0.0, 0.002, Config.SENSOR_FINGERTIP_OFFSET_Z)
-    sensor_pose.r = gymapi.Quat(0.0, 0.0, 0.0, 1.0)
-    
-    sensor_idx = gym.create_asset_force_sensor(robot_asset, right_finger_body_idx, sensor_pose, sensor_props)
-    
-    print(f"Created force sensor on panda_rightfinger (body_idx={right_finger_body_idx}, sensor_idx={sensor_idx})")
-    
     return robot_asset
 
 

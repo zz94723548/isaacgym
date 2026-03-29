@@ -157,7 +157,7 @@ def process_folder(source_folders, save_folder, image_size = [400, 480], masks =
     with Pool() as p:
         p.starmap(uncompress_data, zip(episode_folders, save_paths, [image_size]*len(save_paths), [masks]*len(save_paths)))
 
-# 计算并保存触觉数据的归一化统计信息
+# 计算并保存辅助模态数据的归一化统计信息
 def save_norm_stats(save_folder, num_episodes = None):
     # get the number of episodes
     # find all the episodes in the source folder recursively

@@ -18,22 +18,53 @@ from isaacgym import gymapi, gymutil
 
 from config import SimulationConfig as Config
 from core import simulation
+from systems import tactile
 from main import setup_scene, initialize_systems, run_main_loop
 
 
 def run_single_trajectory(args, seed, output_dir):
     """运行单条轨迹采集。"""
     gym = gymapi.acquire_gym()
+
+    # 与 main.py 保持一致：按物块尺寸自动调优夹爪闭合宽度
+    desired_closed = float(getattr(Config, "GRIPPER_CLOSED_NEAR_CUBE", Config.CUBE_SIZE - 0.001))
+    desired_closed = min(desired_closed, float(getattr(Config, "GRIPPER_FINGER_OPEN", 0.08)))
+    desired_closed = max(desired_closed, float(getattr(Config, "GRIPPER_MIN_GAP", 0.001)) * 2.0)
+    Config.GRIPPER_FINGER_CLOSED = desired_closed
+
+    # 与 main.py 保持一致：默认启用触觉传感器
+    if not hasattr(Config, "ENABLE_TACTILE_SENSOR"):
+        Config.ENABLE_TACTILE_SENSOR = True
+
     Config.RANDOM_SEED = int(seed)
     Config.CAPTURE_OUTPUT_DIR = output_dir
 
     sim, viewer = simulation.initialize_simulation_env(gym, args)
+    systems_data = {}
 
     try:
         scene_data = setup_scene(gym, sim, viewer)
         systems_data = initialize_systems(gym, sim, scene_data, viewer, output_dir=output_dir)
         run_main_loop(gym, sim, viewer, scene_data, systems_data)
     finally:
+        # 与 main.py 保持一致：清理触觉日志文件
+        try:
+            if 'right_log_file' in systems_data and systems_data['right_log_file'] is not None:
+                systems_data['right_log_file'].flush()
+                systems_data['right_log_file'].close()
+            if 'left_log_file' in systems_data and systems_data['left_log_file'] is not None:
+                systems_data['left_log_file'].flush()
+                systems_data['left_log_file'].close()
+        except Exception:
+            pass
+
+        # 与 main.py 保持一致：清理触觉绘图窗口
+        try:
+            tactile.plt.ioff()
+            tactile.plt.close('all')
+        except Exception:
+            pass
+
         gym.destroy_viewer(viewer)
         gym.destroy_sim(sim)
         print("Cleanup completed.")
